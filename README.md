@@ -7,7 +7,7 @@ workspaces, Postgres, Vitest, ESLint, Prettier): a landing page (`/`), a health 
 Sign-in works like loopway's: `/login` emails a one-time code, and redeeming it sets a session cookie. A new email
 gets a user and a personal org they own; a returning one signs in to the same org. `/app` is the signed-in shell
 (name and active org); signed-out requests to `/app` redirect to `/login`. Users can create more orgs (they own
-what they create), and an owner can make a one-use invite link (valid 7 days) for the active org; the invitee logs in,
+what they create), and an owner can email a one-use invite link (valid 7 days) for the active org to someone; the invitee logs in,
 opens the link and joins as a member. A switcher on `/app` changes the active org (kept in the `sesh_org` cookie and
 checked against membership on every request). Only owners invite. Ingest comes later.
 
