@@ -266,4 +266,29 @@ describe("orgs", () => {
     expect(forged).toContain("<strong>stranger</strong>");
     expect(events.find((e) => e.event === "org_switch_rejected")!.properties).toEqual({ reason: "not_a_member" });
   });
+
+  it("keeps the invite when an existing member opens it, and ignores a non-invite next path", async () => {
+    const { form, signIn, emails } = setup();
+    const owner = await signIn("keeper@example.com");
+    const made = await form("/app/orgs", { name: "Team K" }, owner);
+    const active = `${owner}; ${cookieOf(made)}`;
+    const link = await invitePath(await form("/app/orgs/invite", {}, active));
+    expect((await form(link, {}, active)).status).toBe(302);
+    expect(
+      await count(
+        `SELECT count(*) AS n FROM sesh.org_invites WHERE used_at IS NOT NULL AND org_id = '${await orgIdByName("Team K")}'`,
+      ),
+    ).toBe(0);
+    const guest = await signIn("later@example.com");
+    expect((await form(link, {}, guest)).status).toBe(302);
+
+    await form("/login", { email: "nexty@example.com" });
+    const res = await form(
+      "/login/verify",
+      { email: "nexty@example.com", code: codeFrom(emails.at(-1)!) },
+      "sesh_next=https://evil.example/",
+    );
+    expect(res.headers.get("location")).toBe("/app");
+    void app;
+  });
 });
