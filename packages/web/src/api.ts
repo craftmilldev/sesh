@@ -24,6 +24,10 @@ const ORG_COOKIE = "sesh_org";
 const NEXT_COOKIE = "sesh_next";
 const INVITE_PATH_RE = /^\/invite\/[A-Za-z0-9_-]{1,100}$/;
 const MAX_ORG_NAME = 80;
+const MAX_TOKEN_NAME = 80;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** The largest OTLP request accepted, just under Vercel's own 4.5 MB request limit. */
+const MAX_INGEST_BYTES = 4 * 1024 * 1024;
 const cookieOpts = (c: Context, maxAge: number) => ({
   httpOnly: true,
   sameSite: "Lax" as const,
@@ -223,6 +227,52 @@ export function createApp(opts: AppOptions) {
     return c.redirect("/app");
   });
 
+  // OTLP/HTTP ingest. The bearer token says which org and user the payload is for; the body is stored as it came.
+  const ingest = (signal: store.Signal) => async (c: Context) => {
+    const reject = async (status: 401 | 413 | 415 | 400, reason: string, distinctId = ANONYMOUS) => {
+      await metrics.capture("ingest_rejected", distinctId, { signal, reason });
+      return c.json({ error: reason }, status, status === 401 ? { "WWW-Authenticate": "Bearer" } : {});
+    };
+    const header = c.req.header("authorization") ?? "";
+    const bearer = /^Bearer\s+(\S+)$/i.exec(header)?.[1];
+    if (!bearer) return reject(401, "missing_token");
+    const db = await opts.getDb();
+    const who = await store.findIngestToken(db, bearer);
+    if (!who) return reject(401, "invalid_token");
+
+    const contentType = (c.req.header("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+    const encoding = c.req.header("content-encoding")?.trim().toLowerCase();
+    const format =
+      contentType === "application/json" ? "json" : contentType === "application/x-protobuf" ? "protobuf" : "";
+    if (!format || (encoding && encoding !== "identity" && encoding !== "gzip"))
+      return reject(415, format ? "unsupported_encoding" : "unsupported_content_type", who.userId);
+    const declared = Number(c.req.header("content-length") ?? 0);
+    if (declared > MAX_INGEST_BYTES) return reject(413, "payload_too_large", who.userId);
+    const body = new Uint8Array(await c.req.arrayBuffer());
+    if (body.length > MAX_INGEST_BYTES) return reject(413, "payload_too_large", who.userId);
+    if (!body.length) return reject(400, "empty_body", who.userId);
+    if (format === "json" && (!encoding || encoding === "identity")) {
+      try {
+        JSON.parse(new TextDecoder().decode(body));
+      } catch {
+        return reject(400, "invalid_json", who.userId);
+      }
+    }
+
+    await store.storeRawPayload(db, {
+      ...who,
+      signal,
+      contentType,
+      contentEncoding: encoding === "gzip" ? "gzip" : undefined,
+      body,
+    });
+    await metrics.capture("ingest_accepted", who.userId, { signal, format, gzip: encoding === "gzip" });
+    // An empty OTLP success response: `{}` for JSON, zero bytes for protobuf.
+    return format === "json" ? c.json({}) : c.body(null, 200, { "content-type": "application/x-protobuf" });
+  };
+  app.post("/v1/logs", ingest("logs"));
+  app.post("/v1/metrics", ingest("metrics"));
+
   // App pages: signed-out requests go to the login page. Every page is scoped to the active org.
   const appPages = new Hono<{ Variables: { user: store.User; org: store.Membership; orgs: store.Membership[] } }>();
   appPages.use(async (c, next) => {
@@ -243,12 +293,52 @@ export function createApp(opts: AppOptions) {
     await next();
   });
 
-  const shell = (
-    c: Context<{ Variables: { user: store.User; org: store.Membership; orgs: store.Membership[] } }>,
-    extra = html``,
-    error?: string,
-  ) => {
+  type AppContext = Context<{ Variables: { user: store.User; org: store.Membership; orgs: store.Membership[] } }>;
+
+  const envSnippet = (origin: string, token: string) =>
+    html`<pre>
+CLAUDE_CODE_ENABLE_TELEMETRY=1
+OTEL_LOGS_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=otlp
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_ENDPOINT=${origin}
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${token}"</pre>`;
+
+  const tokensSection = async (c: AppContext, created?: { token: string }) => {
+    const { user, org } = c.var;
+    const tokens = await store.listIngestTokens(await opts.getDb(), user.id, org.id);
+    return html`<h2>Ingest tokens for ${org.name}</h2>
+      ${
+        created
+          ? html`<p>
+                Your new token. Copy it now; it is never shown again. Set these in the environment Claude Code runs in:
+              </p>
+              ${envSnippet(new URL(c.req.url).origin, created.token)}`
+          : tokens.length
+            ? html`<p>Point Claude Code at sesh with these (use a token you saved, or make a new one):</p>
+                ${envSnippet(new URL(c.req.url).origin, "<your token>")}`
+            : ""
+      }
+      <ul>
+        ${tokens.map(
+          (t) =>
+            html`<li>
+              ${t.name}
+              <form method="post" action="/app/tokens/${t.id}/revoke" style="display:inline">
+                <button type="submit">Revoke</button>
+              </form>
+            </li>`,
+        )}
+      </ul>
+      <form method="post" action="/app/tokens">
+        <label>New token <input name="name" required maxlength="${MAX_TOKEN_NAME}" placeholder="laptop" /></label>
+        <button type="submit">Create</button>
+      </form>`;
+  };
+
+  const shell = async (c: AppContext, extra = html``, error?: string, created?: { token: string }) => {
     const { user, org, orgs } = c.var;
+    const tokens = await tokensSection(c, created);
     return page(
       "sesh",
       html`<h1>sesh</h1>
@@ -280,13 +370,14 @@ export function createApp(opts: AppOptions) {
               </form>`
             : ""
         }
+        ${tokens}
         <form method="post" action="/logout"><button type="submit">Sign out</button></form>`,
     );
   };
 
   appPages.get("/", async (c) => {
     await metrics.capture("shell_viewed", c.var.user.id);
-    return c.html(shell(c));
+    return c.html(await shell(c));
   });
 
   appPages.post("/orgs", async (c) => {
@@ -294,7 +385,7 @@ export function createApp(opts: AppOptions) {
     const name = field(await c.req.parseBody(), "name");
     if (!name || name.length > MAX_ORG_NAME) {
       await metrics.capture("org_create_rejected", user.id, { reason: name ? "name_too_long" : "empty_name" });
-      return c.html(shell(c, html``, `Give the org a name of up to ${MAX_ORG_NAME} characters.`), 400);
+      return c.html(await shell(c, html``, `Give the org a name of up to ${MAX_ORG_NAME} characters.`), 400);
     }
     const org = await store.createOrg(await opts.getDb(), user.id, name);
     await metrics.capture("org_created", user.id);
@@ -308,7 +399,7 @@ export function createApp(opts: AppOptions) {
     const target = c.var.orgs.find((o) => o.id === wanted);
     if (!target) {
       await metrics.capture("org_switch_rejected", user.id, { reason: "not_a_member" });
-      return c.html(shell(c, html``, "You aren't a member of that org."), 403);
+      return c.html(await shell(c, html``, "You aren't a member of that org."), 403);
     }
     await metrics.capture("org_switched", user.id);
     setCookie(c, ORG_COOKIE, target.id, cookieOpts(c, SESSION_TTL_SECONDS));
@@ -321,14 +412,14 @@ export function createApp(opts: AppOptions) {
     const email = field(await c.req.parseBody(), "email").toLowerCase();
     if (!EMAIL_RE.test(email) || email.length > 320) {
       await metrics.capture("invite_create_rejected", user.id, { reason: "invalid_email" });
-      return c.html(shell(c, html``, "That doesn't look like an email address."), 400);
+      return c.html(await shell(c, html``, "That doesn't look like an email address."), 400);
     }
     const made = await store.createInvite(await opts.getDb(), user.id, org.id);
     if (!made.ok) {
       await metrics.capture("invite_create_rejected", user.id, { reason: made.problem });
       return made.problem === "not_owner"
-        ? c.html(shell(c, html``, "Only owners can invite people."), 403)
-        : c.html(shell(c, html``, "You've sent a lot of invites today. Try again tomorrow."), 429);
+        ? c.html(await shell(c, html``, "Only owners can invite people."), 403)
+        : c.html(await shell(c, html``, "You've sent a lot of invites today. Try again tomorrow."), 429);
     }
     const token = made.token;
     await metrics.capture("invite_created", user.id);
@@ -343,9 +434,38 @@ export function createApp(opts: AppOptions) {
       throw err;
     }
     return c.html(
-      shell(c, html`<p>Invite sent to ${email}. The link works once and expires in ${store.INVITE_TTL_DAYS} days.</p>`),
+      await shell(
+        c,
+        html`<p>Invite sent to ${email}. The link works once and expires in ${store.INVITE_TTL_DAYS} days.</p>`,
+      ),
     );
   });
+  // Tokens belong to the signed-in user and the active org, so there is no org id to tamper with.
+  appPages.post("/tokens", async (c) => {
+    const { user, org } = c.var;
+    const name = field(await c.req.parseBody(), "name");
+    if (!name || name.length > MAX_TOKEN_NAME) {
+      await metrics.capture("token_create_rejected", user.id, { reason: name ? "name_too_long" : "empty_name" });
+      return c.html(await shell(c, html``, `Give the token a name of up to ${MAX_TOKEN_NAME} characters.`), 400);
+    }
+    const made = await store.createIngestToken(await opts.getDb(), user.id, org.id, name);
+    await metrics.capture("token_created", user.id);
+    // Shown on this response only: the page that makes it is the page that displays it.
+    return c.html(await shell(c, html``, undefined, made));
+  });
+
+  appPages.post("/tokens/:id/revoke", async (c) => {
+    const { user, org } = c.var;
+    const id = c.req.param("id");
+    const revoked = UUID_RE.test(id) && (await store.revokeIngestToken(await opts.getDb(), user.id, org.id, id));
+    if (!revoked) {
+      await metrics.capture("token_revoke_rejected", user.id, { reason: "not_found" });
+      return c.html(await shell(c, html``, "That token doesn't exist or was already revoked."), 404);
+    }
+    await metrics.capture("token_revoked", user.id);
+    return c.redirect("/app");
+  });
+
   app.route("/app", appPages);
 
   return app;

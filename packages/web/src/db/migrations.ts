@@ -76,4 +76,37 @@ CREATE INDEX org_invites_org_idx ON sesh.org_invites (org_id);
 ALTER TABLE sesh.org_invites ENABLE ROW LEVEL SECURITY;
 `,
   },
+  {
+    version: "003_ingest_tokens",
+    sql: `
+CREATE TABLE sesh.ingest_tokens (
+  id          uuid PRIMARY KEY,
+  org_id      uuid NOT NULL REFERENCES sesh.orgs(id) ON DELETE CASCADE,
+  user_id     uuid NOT NULL REFERENCES sesh.users(id) ON DELETE CASCADE,
+  name        text NOT NULL,
+  token_hash  text NOT NULL UNIQUE,
+  revoked_at  timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ingest_tokens_user_idx ON sesh.ingest_tokens (user_id, org_id);
+
+CREATE TABLE sesh.raw_payloads (
+  id                uuid PRIMARY KEY,
+  org_id            uuid NOT NULL REFERENCES sesh.orgs(id) ON DELETE CASCADE,
+  user_id           uuid NOT NULL REFERENCES sesh.users(id) ON DELETE CASCADE,
+  signal            text NOT NULL CHECK (signal IN ('logs', 'metrics')),
+  content_type      text NOT NULL,
+  content_encoding  text,
+  body              bytea NOT NULL,
+  received_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX raw_payloads_org_idx ON sesh.raw_payloads (org_id, received_at);
+
+ALTER TABLE sesh.ingest_tokens ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE sesh.raw_payloads  ENABLE ROW LEVEL SECURITY;
+`,
+  },
 ];

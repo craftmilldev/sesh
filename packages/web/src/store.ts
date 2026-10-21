@@ -1,5 +1,5 @@
 import type { Db } from "./db/index.js";
-import { newInviteToken, newLoginCode, normalizeLoginCode, safeEqual, sha256, uuidv7 } from "./ids.js";
+import { newIngestToken, newInviteToken, newLoginCode, normalizeLoginCode, safeEqual, sha256, uuidv7 } from "./ids.js";
 
 export interface User {
   id: string;
@@ -168,4 +168,73 @@ export async function acceptInvite(db: Db, userId: string, token: string): Promi
     await tx.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`, [org.id, userId]);
     return { ok: true as const, org, alreadyMember: false };
   });
+}
+
+export interface IngestToken {
+  id: string;
+  name: string;
+  created_at: Date;
+}
+
+/** Makes a token for the user in an org they belong to. Returns the secret once; only its hash is stored. */
+export async function createIngestToken(
+  db: Db,
+  userId: string,
+  orgId: string,
+  name: string,
+): Promise<{ id: string; token: string }> {
+  const token = newIngestToken();
+  const id = uuidv7();
+  await db.query(`INSERT INTO sesh.ingest_tokens (id, org_id, user_id, name, token_hash) VALUES ($1, $2, $3, $4, $5)`, [
+    id,
+    orgId,
+    userId,
+    name,
+    sha256(token),
+  ]);
+  return { id, token };
+}
+
+/** The user's live (not revoked) tokens for an org, newest first. */
+export async function listIngestTokens(db: Db, userId: string, orgId: string): Promise<IngestToken[]> {
+  return db.query<IngestToken>(
+    `SELECT id, name, created_at FROM sesh.ingest_tokens
+     WHERE user_id = $1 AND org_id = $2 AND revoked_at IS NULL ORDER BY id DESC`,
+    [userId, orgId],
+  );
+}
+
+/** Revokes one of the user's own tokens. False when it isn't theirs, isn't in this org or was already revoked. */
+export async function revokeIngestToken(db: Db, userId: string, orgId: string, id: string): Promise<boolean> {
+  const rows = await db.query(
+    `UPDATE sesh.ingest_tokens SET revoked_at = now()
+     WHERE id = $1 AND user_id = $2 AND org_id = $3 AND revoked_at IS NULL RETURNING id`,
+    [id, userId, orgId],
+  );
+  return rows.length > 0;
+}
+
+/** Who a bearer token speaks for. Revoked tokens, and tokens of users no longer in the org, match nothing. */
+export async function findIngestToken(db: Db, token: string): Promise<{ orgId: string; userId: string } | undefined> {
+  const [row] = await db.query<{ org_id: string; user_id: string }>(
+    `SELECT t.org_id, t.user_id FROM sesh.ingest_tokens t
+     JOIN sesh.org_members m ON m.org_id = t.org_id AND m.user_id = t.user_id
+     WHERE t.token_hash = $1 AND t.revoked_at IS NULL`,
+    [sha256(token)],
+  );
+  return row && { orgId: row.org_id, userId: row.user_id };
+}
+
+export type Signal = "logs" | "metrics";
+
+/** Stores an accepted OTLP request exactly as it arrived, for the parsing step to read later. */
+export async function storeRawPayload(
+  db: Db,
+  p: { orgId: string; userId: string; signal: Signal; contentType: string; contentEncoding?: string; body: Uint8Array },
+): Promise<void> {
+  await db.query(
+    `INSERT INTO sesh.raw_payloads (id, org_id, user_id, signal, content_type, content_encoding, body)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [uuidv7(), p.orgId, p.userId, p.signal, p.contentType, p.contentEncoding ?? null, Buffer.from(p.body)],
+  );
 }
