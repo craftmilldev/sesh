@@ -161,7 +161,7 @@ export function createApp(opts: AppOptions) {
       return c.html(codeForm(email, "That code doesn't look right."), 400);
     }
     const result = await store.redeemLoginCode(await opts.getDb(), email, code);
-    if (!result.ok) {
+    if ("problem" in result) {
       await metrics.capture("verify_rejected", ANONYMOUS, { reason: result.problem });
       return c.html(codeForm(email, "That code is invalid or has expired."), 401);
     }
