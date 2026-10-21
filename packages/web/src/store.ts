@@ -1,5 +1,5 @@
 import type { Db } from "./db/index.js";
-import { newLoginCode, normalizeLoginCode, safeEqual, sha256, uuidv7 } from "./ids.js";
+import { newInviteToken, newLoginCode, normalizeLoginCode, safeEqual, sha256, uuidv7 } from "./ids.js";
 
 export interface User {
   id: string;
@@ -11,6 +11,13 @@ export interface Org {
   id: string;
   name: string;
 }
+
+export type Role = "owner" | "member";
+export interface Membership extends Org {
+  role: Role;
+}
+
+export const INVITE_TTL_DAYS = 7;
 
 export const LOGIN_CODE_TTL_MINUTES = 10;
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -76,5 +83,89 @@ export async function redeemLoginCode(db: Db, email: string, code: string): Prom
     await tx.query(`INSERT INTO sesh.orgs (id, name, personal_user_id) VALUES ($1, $2, $3)`, [orgId, name, user!.id]);
     await tx.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'owner')`, [orgId, user!.id]);
     return { ok: true as const, user: user!, created: true };
+  });
+}
+
+/** Every org the user belongs to, oldest first, with their role in it. */
+export async function userOrgs(db: Db, userId: string): Promise<Membership[]> {
+  return db.query<Membership>(
+    `SELECT o.id, o.name, m.role FROM sesh.org_members m JOIN sesh.orgs o ON o.id = m.org_id
+     WHERE m.user_id = $1 ORDER BY o.id`,
+    [userId],
+  );
+}
+
+/** Creates an org with the user as its owner. */
+export async function createOrg(db: Db, userId: string, name: string): Promise<Org> {
+  return db.transaction(async (tx) => {
+    const [org] = await tx.query<Org>(`INSERT INTO sesh.orgs (id, name) VALUES ($1, $2) RETURNING id, name`, [
+      uuidv7(),
+      name,
+    ]);
+    await tx.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'owner')`, [org!.id, userId]);
+    return org!;
+  });
+}
+
+/** The most invites one owner can send in a day, so the invite email can't be used to spam. */
+export const MAX_INVITES_PER_DAY = 20;
+
+export type CreateInviteResult = { ok: true; token: string } | { ok: false; problem: "not_owner" | "rate_limited" };
+
+/** Makes a one-use invite token for an org. Only an owner can, and only up to a daily cap. */
+export async function createInvite(db: Db, userId: string, orgId: string): Promise<CreateInviteResult> {
+  const [owner] = await db.query(
+    `SELECT 1 FROM sesh.org_members WHERE org_id = $1 AND user_id = $2 AND role = 'owner'`,
+    [orgId, userId],
+  );
+  if (!owner) return { ok: false, problem: "not_owner" };
+  const token = newInviteToken();
+  const made = await db.query(
+    `INSERT INTO sesh.org_invites (id, org_id, token_hash, created_by, expires_at)
+     SELECT $1, $3, $2, $4, now() + $5::int * interval '1 day'
+     WHERE (SELECT count(*) FROM sesh.org_invites WHERE created_by = $4 AND created_at > now() - interval '1 day') < $6
+     RETURNING id`,
+    [uuidv7(), sha256(token), orgId, userId, INVITE_TTL_DAYS, MAX_INVITES_PER_DAY],
+  );
+  return made.length ? { ok: true, token } : { ok: false, problem: "rate_limited" };
+}
+
+export type InviteLookup = { ok: true; org: Org } | { ok: false; problem: "unknown" | "used" | "expired" };
+
+export async function findInvite(db: Db, token: string): Promise<InviteLookup> {
+  const [row] = await db.query<{ id: string; name: string; used: boolean; expired: boolean }>(
+    `SELECT o.id, o.name, i.used_at IS NOT NULL AS used, i.expires_at <= now() AS expired
+     FROM sesh.org_invites i JOIN sesh.orgs o ON o.id = i.org_id WHERE i.token_hash = $1`,
+    [sha256(token)],
+  );
+  if (!row) return { ok: false, problem: "unknown" };
+  if (row.used) return { ok: false, problem: "used" };
+  if (row.expired) return { ok: false, problem: "expired" };
+  return { ok: true, org: { id: row.id, name: row.name } };
+}
+
+export type AcceptResult =
+  { ok: true; org: Org; alreadyMember: boolean } | { ok: false; problem: "unknown" | "used" | "expired" };
+
+/** Spends an invite and makes the user a member. Someone already in the org joins nothing and the invite is kept. */
+export async function acceptInvite(db: Db, userId: string, token: string): Promise<AcceptResult> {
+  return db.transaction(async (tx) => {
+    const [inv] = await tx.query<{ id: string; org_id: string; name: string; used: boolean; expired: boolean }>(
+      `SELECT i.id, i.org_id, o.name, i.used_at IS NOT NULL AS used, i.expires_at <= now() AS expired
+       FROM sesh.org_invites i JOIN sesh.orgs o ON o.id = i.org_id WHERE i.token_hash = $1 FOR UPDATE OF i`,
+      [sha256(token)],
+    );
+    if (!inv) return { ok: false as const, problem: "unknown" as const };
+    if (inv.used) return { ok: false as const, problem: "used" as const };
+    if (inv.expired) return { ok: false as const, problem: "expired" as const };
+    const org = { id: inv.org_id, name: inv.name };
+    const [member] = await tx.query(`SELECT 1 FROM sesh.org_members WHERE org_id = $1 AND user_id = $2`, [
+      org.id,
+      userId,
+    ]);
+    if (member) return { ok: true as const, org, alreadyMember: true };
+    await tx.query(`UPDATE sesh.org_invites SET used_by = $1, used_at = now() WHERE id = $2`, [userId, inv.id]);
+    await tx.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`, [org.id, userId]);
+    return { ok: true as const, org, alreadyMember: false };
   });
 }

@@ -42,7 +42,7 @@ function setup() {
     expect(res.headers.get("location")).toBe("/app");
     return res.headers.get("set-cookie")!.split(";")[0]!;
   }
-  return { app, events, emails, form, signIn };
+  return { app, events, emails, form, signIn, codeFrom };
 }
 
 const count = async (sql: string) => Number((await db.query<{ n: string }>(sql))[0]!.n);
@@ -149,5 +149,180 @@ describe("sign-in", () => {
     const res = await form("/logout", {}, cookie);
     expect(res.headers.get("set-cookie")).toContain("sesh_session=;");
     expect((await app.request("/app")).status).toBe(302);
+  });
+});
+
+describe("orgs", () => {
+  const codeFrom = (e: Email) => /code is ([0-9A-Z]{8})/.exec(e.text)![1]!;
+  const cookieOf = (res: Response) =>
+    res.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0]!)
+      .join("; ");
+  const orgIdByName = async (name: string) =>
+    (await db.query<{ id: string }>(`SELECT id FROM sesh.orgs WHERE name = $1`, [name]))[0]!.id;
+  /** Has the cookie's owner invite someone by email, and returns the invite path from the email that went out. */
+  async function invite(t: ReturnType<typeof setup>, cookie: string, to = "invitee@example.com") {
+    const res = await t.form("/app/orgs/invite", { email: to }, cookie);
+    expect(res.status).toBe(200);
+    const mail = t.emails.at(-1)!;
+    expect(mail.to).toBe(to);
+    return /\/invite\/[\w-]+/.exec(mail.text)![0];
+  }
+
+  it("creates an org the user owns and makes it active", async () => {
+    const { app, form, signIn, events } = setup();
+    const cookie = await signIn("founder@example.com");
+    expect((await form("/app/orgs", { name: "" }, cookie)).status).toBe(400);
+    const res = await form("/app/orgs", { name: "Founders Inc" }, cookie);
+    expect(res.status).toBe(302);
+    const body = await (await app.request("/app", { headers: { cookie: `${cookie}; ${cookieOf(res)}` } })).text();
+    expect(body).toContain("Founders Inc");
+    expect(body).toContain("(owner)");
+    expect(events.map((e) => e.event)).toContain("org_created");
+    expect(events.find((e) => e.event === "org_create_rejected")!.properties).toEqual({ reason: "empty_name" });
+  });
+
+  it("lets an owner invite, the invitee join once after logging in, and rejects reuse", async () => {
+    const t = setup();
+    const { app, form, signIn, emails, events } = t;
+    const owner = await signIn("owner@example.com");
+    const made = await form("/app/orgs", { name: "Team A" }, owner);
+    const link = await invite(t, `${owner}; ${cookieOf(made)}`);
+
+    // Signed out: sent to log in, and back to the invite afterwards.
+    const out = await app.request(link);
+    expect(out.headers.get("location")).toBe("/login");
+    await form("/login", { email: "guest@example.com" });
+    const verified = await form(
+      "/login/verify",
+      { email: "guest@example.com", code: codeFrom(emails.at(-1)!) },
+      cookieOf(out),
+    );
+    expect(verified.headers.get("location")).toBe(link);
+    const guest = cookieOf(verified)
+      .split("; ")
+      .find((c) => c.startsWith("sesh_session="))!;
+
+    expect(await (await app.request(link, { headers: { cookie: guest } })).text()).toContain("Join Team A");
+    const joined = await form(link, {}, guest);
+    expect(joined.headers.get("location")).toBe("/app");
+    const roles = await db.query(
+      `SELECT m.role FROM sesh.org_members m JOIN sesh.users u ON u.id = m.user_id WHERE u.email = 'guest@example.com' AND m.org_id = $1`,
+      [await orgIdByName("Team A")],
+    );
+    expect(roles).toEqual([{ role: "member" }]);
+    expect(events.map((e) => e.event)).toContain("invite_accepted");
+
+    // Used: rejected for anyone, on view and on accept.
+    const other = await signIn("other@example.com");
+    expect((await app.request(link, { headers: { cookie: other } })).status).toBe(410);
+    expect((await form(link, {}, other)).status).toBe(410);
+    expect(events.filter((e) => e.event === "invite_rejected").map((e) => e.properties)).toEqual([
+      { reason: "used", step: "view" },
+      { reason: "used", step: "accept" },
+    ]);
+  });
+
+  it("rejects an expired or unknown invite", async () => {
+    const t = setup();
+    const { form, app, signIn } = t;
+    const owner = await signIn("expiry@example.com");
+    const made = await form("/app/orgs", { name: "Team Exp" }, owner);
+    const link = await invite(t, `${owner}; ${cookieOf(made)}`);
+    const orgId = await orgIdByName("Team Exp");
+    await db.query(`UPDATE sesh.org_invites SET expires_at = now() - interval '1 minute' WHERE org_id = $1`, [orgId]);
+    const guest = await signIn("late@example.com");
+    expect((await form(link, {}, guest)).status).toBe(410);
+    expect((await app.request("/invite/nope", { headers: { cookie: guest } })).status).toBe(410);
+    expect(await count(`SELECT count(*) AS n FROM sesh.org_members WHERE org_id = '${orgId}'`)).toBe(1);
+  });
+
+  it("does not let members invite", async () => {
+    const t = setup();
+    const { form, signIn, events } = t;
+    const owner = await signIn("boss@example.com");
+    const made = await form("/app/orgs", { name: "Team M" }, owner);
+    const link = await invite(t, `${owner}; ${cookieOf(made)}`);
+    const member = await signIn("worker@example.com");
+    const joined = await form(link, {}, member);
+    const res = await form("/app/orgs/invite", { email: "x@example.com" }, `${member}; ${cookieOf(joined)}`);
+    expect(res.status).toBe(403);
+    expect(events.find((e) => e.event === "invite_create_rejected")!.properties).toEqual({ reason: "not_owner" });
+    expect(
+      await count(
+        `SELECT count(*) AS n FROM sesh.org_invites WHERE created_by = (SELECT id FROM sesh.users WHERE email = 'worker@example.com')`,
+      ),
+    ).toBe(0);
+  });
+
+  it("rejects an invite to a bad email address", async () => {
+    const { form, signIn, emails, events } = setup();
+    const owner = await signIn("picky@example.com");
+    const before = emails.length;
+    expect((await form("/app/orgs/invite", { email: "nope" }, owner)).status).toBe(400);
+    expect(emails).toHaveLength(before);
+    expect(events.find((e) => e.event === "invite_create_rejected")!.properties).toEqual({ reason: "invalid_email" });
+  });
+
+  it("caps how many invites an owner can send in a day", async () => {
+    const t = setup();
+    const owner = await t.signIn("spammer@example.com");
+    const made = await t.form("/app/orgs", { name: "Team Cap" }, owner);
+    const active = `${owner}; ${cookieOf(made)}`;
+    await db.query(
+      `INSERT INTO sesh.org_invites (id, org_id, token_hash, created_by, expires_at)
+       SELECT gen_random_uuid(), o.id, 'cap-' || g, u.id, now() + interval '1 day'
+       FROM generate_series(1, 20) g, sesh.orgs o, sesh.users u WHERE o.name = 'Team Cap' AND u.email = 'spammer@example.com'`,
+    );
+    const before = t.emails.length;
+    expect((await t.form("/app/orgs/invite", { email: "victim@example.com" }, active)).status).toBe(429);
+    expect(t.emails).toHaveLength(before);
+    expect(t.events.find((e) => e.event === "invite_create_rejected")!.properties).toEqual({ reason: "rate_limited" });
+  });
+
+  it("switches between orgs and refuses an org the user is not in", async () => {
+    const { app, form, signIn, events } = setup();
+    const a = await signIn("multi@example.com");
+    await form("/app/orgs", { name: "Second Org" }, a);
+    const res = await form("/app/orgs/switch", { org: await orgIdByName("multi") }, a);
+    expect(res.status).toBe(302);
+    const body = await (await app.request("/app", { headers: { cookie: `${a}; ${cookieOf(res)}` } })).text();
+    expect(body).toContain("<strong>multi</strong> (owner)");
+    expect(body).toContain("Second Org");
+
+    // Someone else's org can't be switched to, and a forged org cookie falls back to one they belong to.
+    const second = await orgIdByName("Second Org");
+    const stranger = await signIn("stranger@example.com");
+    expect((await form("/app/orgs/switch", { org: second }, stranger)).status).toBe(403);
+    const forged = await (await app.request("/app", { headers: { cookie: `${stranger}; sesh_org=${second}` } })).text();
+    expect(forged).not.toContain("Second Org");
+    expect(forged).toContain("<strong>stranger</strong>");
+    expect(events.find((e) => e.event === "org_switch_rejected")!.properties).toEqual({ reason: "not_a_member" });
+  });
+
+  it("keeps the invite when an existing member opens it, and ignores a non-invite next path", async () => {
+    const t = setup();
+    const { form, signIn, emails } = t;
+    const owner = await signIn("keeper@example.com");
+    const made = await form("/app/orgs", { name: "Team K" }, owner);
+    const active = `${owner}; ${cookieOf(made)}`;
+    const link = await invite(t, active);
+    expect((await form(link, {}, active)).status).toBe(302);
+    expect(
+      await count(
+        `SELECT count(*) AS n FROM sesh.org_invites WHERE used_at IS NOT NULL AND org_id = '${await orgIdByName("Team K")}'`,
+      ),
+    ).toBe(0);
+    const guest = await signIn("later@example.com");
+    expect((await form(link, {}, guest)).status).toBe(302);
+
+    await form("/login", { email: "nexty@example.com" });
+    const res = await form(
+      "/login/verify",
+      { email: "nexty@example.com", code: codeFrom(emails.at(-1)!) },
+      "sesh_next=https://evil.example/",
+    );
+    expect(res.headers.get("location")).toBe("/app");
   });
 });

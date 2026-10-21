@@ -28,3 +28,6 @@ export function safeEqual(a: string, b: string): boolean {
   const bb = Buffer.from(b);
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
+
+/** An unguessable invite token for a link. */
+export const newInviteToken = () => randomBytes(24).toString("base64url");

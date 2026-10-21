@@ -53,4 +53,27 @@ ALTER TABLE sesh.org_members  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sesh.login_codes  ENABLE ROW LEVEL SECURITY;
 `,
   },
+  {
+    version: "002_org_invites",
+    sql: `
+ALTER TABLE sesh.org_members DROP CONSTRAINT org_members_role_check;
+
+ALTER TABLE sesh.org_members ADD CONSTRAINT org_members_role_check CHECK (role IN ('owner', 'member'));
+
+CREATE TABLE sesh.org_invites (
+  id          uuid PRIMARY KEY,
+  org_id      uuid NOT NULL REFERENCES sesh.orgs(id) ON DELETE CASCADE,
+  token_hash  text NOT NULL UNIQUE,
+  created_by  uuid NOT NULL REFERENCES sesh.users(id) ON DELETE CASCADE,
+  used_by     uuid REFERENCES sesh.users(id) ON DELETE SET NULL,
+  used_at     timestamptz,
+  expires_at  timestamptz NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX org_invites_org_idx ON sesh.org_invites (org_id);
+
+ALTER TABLE sesh.org_invites ENABLE ROW LEVEL SECURITY;
+`,
+  },
 ];
