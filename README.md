@@ -2,9 +2,11 @@
 
 Session insights for Claude Code teams: org session logging from OTel. It shows the shape of the work, never who did it.
 
-This is the scaffold: a Hono app with a landing page (`/`) and a health check (`/health`), on the same stack as
-[loopway](https://github.com/craftmilldev/loopway) (TypeScript, Node 22+, npm workspaces, Vitest, ESLint, Prettier).
-Login, orgs and ingest come later.
+A Hono app on the same stack as [loopway](https://github.com/craftmilldev/loopway) (TypeScript, Node 22+, npm
+workspaces, Postgres, Vitest, ESLint, Prettier): a landing page (`/`), a health check (`/health`), and sign-in.
+Sign-in works like loopway's: `/login` emails a one-time code, and redeeming it sets a session cookie. A new email
+gets a user and a personal org they own; a returning one signs in to the same org. `/app` is the signed-in shell
+(name and org); signed-out requests to `/app` redirect to `/login`. Ingest comes later.
 
 The earlier statusline spike is in [`spike/statusline/`](spike/statusline/).
 
@@ -12,12 +14,14 @@ The earlier statusline spike is in [`spike/statusline/`](spike/statusline/).
 
 ```bash
 npm install
+npm run db:up          # local Postgres on port 54330
+cp packages/web/.env.example packages/web/.env   # DATABASE_URL; leave TOKEN_SECRET unset for a random one
 npm run dev            # http://localhost:3000, restarts on change
 curl localhost:3000/health   # {"ok":true}
 ```
 
-Copy `packages/web/.env.example` to `packages/web/.env` to change `PORT` or turn on PostHog metrics
-(`POSTHOG_API_KEY`; unset sends nothing). `npm run db:up` starts a local Postgres 17 on port 54330; nothing uses it yet.
+Without `RESEND_API_KEY`, login codes are printed to the server console. Set `POSTHOG_API_KEY` to turn on product
+metrics (unset sends nothing). `npm run dev` applies migrations to the local database.
 
 ## Test
 
@@ -33,7 +37,9 @@ sesh deploys to Vercel the way loopway does: Vercel detects Hono at `packages/we
 (`packages/web/vercel.json`). One-time setup, which needs a Vercel login:
 
 1. In the `craftmill` Vercel team, import `craftmilldev/sesh` as a new project named `sesh`, with **Root Directory** set to `packages/web`.
-2. Optionally set `POSTHOG_API_KEY` (and `POSTHOG_HOST` for EU) in the project's environment variables.
+2. Set `DATABASE_URL` (Neon's pooled string) and `DATABASE_URL_UNPOOLED` (the direct one), `TOKEN_SECRET`
+   (`openssl rand -hex 32`), `RESEND_API_KEY` and `EMAIL_FROM` in the project's environment variables. Optionally set
+   `POSTHOG_API_KEY` (and `POSTHOG_HOST` for EU). The build applies pending migrations before deploying.
 3. Deploy `main`, then check `https://<deployment>/health` returns 200.
 
 After that, every merge to `main` deploys.
