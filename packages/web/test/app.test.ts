@@ -289,6 +289,5 @@ describe("orgs", () => {
       "sesh_next=https://evil.example/",
     );
     expect(res.headers.get("location")).toBe("/app");
-    void app;
   });
 });
