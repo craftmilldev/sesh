@@ -40,6 +40,20 @@ const field = (body: Record<string, unknown>, name: string) =>
   typeof body[name] === "string" ? body[name].trim() : "";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Reads a request body, giving up (undefined) as soon as it passes `max` bytes, so chunked uploads can't be buffered whole. */
+async function readCapped(stream: ReadableStream<Uint8Array> | null, max: number) {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (stream) {
+    for await (const chunk of stream) {
+      size += chunk.length;
+      if (size > max) return undefined;
+      chunks.push(chunk);
+    }
+  }
+  return new Uint8Array(Buffer.concat(chunks));
+}
+
 const page = (title: string, body: ReturnType<typeof html>) =>
   html`<!doctype html>
     <html lang="en">
@@ -248,8 +262,8 @@ export function createApp(opts: AppOptions) {
       return reject(415, format ? "unsupported_encoding" : "unsupported_content_type", who.userId);
     const declared = Number(c.req.header("content-length") ?? 0);
     if (declared > MAX_INGEST_BYTES) return reject(413, "payload_too_large", who.userId);
-    const body = new Uint8Array(await c.req.arrayBuffer());
-    if (body.length > MAX_INGEST_BYTES) return reject(413, "payload_too_large", who.userId);
+    const body = await readCapped(c.req.raw.body, MAX_INGEST_BYTES);
+    if (!body) return reject(413, "payload_too_large", who.userId);
     if (!body.length) return reject(400, "empty_body", who.userId);
     if (format === "json" && (!encoding || encoding === "identity")) {
       try {

@@ -194,12 +194,28 @@ describe("OTLP ingest", () => {
     expect((await t.post("/v1/logs", "hi", { ...auth, "content-type": "text/plain" })).status).toBe(415);
     expect((await t.post("/v1/logs", logs, { ...auth, "content-encoding": "br" })).status).toBe(415);
     expect((await t.post("/v1/logs", "x".repeat(4 * 1024 * 1024 + 1), auth)).status).toBe(413);
+    // No Content-Length (a chunked upload): the cap still holds.
+    const chunked = new ReadableStream<Uint8Array>({
+      start(ctl) {
+        ctl.enqueue(new Uint8Array(3 * 1024 * 1024));
+        ctl.enqueue(new Uint8Array(2 * 1024 * 1024));
+        ctl.close();
+      },
+    });
+    const big = await t.app.request("/v1/logs", {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: chunked,
+      duplex: "half",
+    } as RequestInit);
+    expect(big.status).toBe(413);
     expect(await payloads("ing5@example.com")).toHaveLength(0);
     expect(t.events.filter((e) => e.event === "ingest_rejected").map((e) => e.properties!.reason)).toEqual([
       "invalid_json",
       "empty_body",
       "unsupported_content_type",
       "unsupported_encoding",
+      "payload_too_large",
       "payload_too_large",
     ]);
   });
