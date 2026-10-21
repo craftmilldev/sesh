@@ -275,7 +275,8 @@ export function createApp(opts: AppOptions) {
         ${
           org.role === "owner"
             ? html`<form method="post" action="/app/orgs/invite">
-                <button type="submit">Invite someone to ${org.name}</button>
+                <label>Invite by email <input type="email" name="email" required /></label>
+                <button type="submit">Send invite to ${org.name}</button>
               </form>`
             : ""
         }
@@ -317,20 +318,29 @@ export function createApp(opts: AppOptions) {
   // Invites are always for the active org, so there is no org id to tamper with.
   appPages.post("/orgs/invite", async (c) => {
     const { user, org } = c.var;
+    const email = field(await c.req.parseBody(), "email").toLowerCase();
+    if (!EMAIL_RE.test(email) || email.length > 320) {
+      await metrics.capture("invite_create_rejected", user.id, { reason: "invalid_email" });
+      return c.html(shell(c, html``, "That doesn't look like an email address."), 400);
+    }
     const token = await store.createInvite(await opts.getDb(), user.id, org.id);
     if (!token) {
       await metrics.capture("invite_create_rejected", user.id, { reason: "not_owner" });
       return c.html(shell(c, html``, "Only owners can invite people."), 403);
     }
     await metrics.capture("invite_created", user.id);
-    const link = `${new URL(c.req.url).origin}/invite/${token}`;
+    try {
+      await sendEmail({
+        to: email,
+        subject: `Join ${org.name} on sesh`,
+        text: `${user.name} invited you to ${org.name} on sesh.\n\nSign in and join: ${new URL(c.req.url).origin}/invite/${token}\n\nThe link works once and expires in ${store.INVITE_TTL_DAYS} days.`,
+      });
+    } catch (err) {
+      await metrics.capture("invite_email_failed", user.id);
+      throw err;
+    }
     return c.html(
-      shell(
-        c,
-        html`<p>
-          Share this link. It works once and expires in ${store.INVITE_TTL_DAYS} days:<br /><code>${link}</code>
-        </p>`,
-      ),
+      shell(c, html`<p>Invite sent to ${email}. The link works once and expires in ${store.INVITE_TTL_DAYS} days.</p>`),
     );
   });
   app.route("/app", appPages);

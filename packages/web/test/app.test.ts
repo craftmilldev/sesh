@@ -162,7 +162,14 @@ describe("orgs", () => {
   const orgIdByName = async (name: string) =>
     (await db.query<{ id: string }>(`SELECT id FROM sesh.orgs WHERE name = $1`, [name]))[0]!.id;
   /** The invite path (/invite/<token>) out of the page that shows the new link. */
-  const invitePath = async (res: Response) => /\/invite\/[\w-]+/.exec(await res.text())![0];
+  /** Has the cookie's owner invite someone by email, and returns the invite path from the email that went out. */
+  async function invite(t: ReturnType<typeof setup>, cookie: string, to = "invitee@example.com") {
+    const res = await t.form("/app/orgs/invite", { email: to }, cookie);
+    expect(res.status).toBe(200);
+    const mail = t.emails.at(-1)!;
+    expect(mail.to).toBe(to);
+    return /\/invite\/[\w-]+/.exec(mail.text)![0];
+  }
 
   it("creates an org the user owns and makes it active", async () => {
     const { app, form, signIn, events } = setup();
@@ -178,10 +185,11 @@ describe("orgs", () => {
   });
 
   it("lets an owner invite, the invitee join once after logging in, and rejects reuse", async () => {
-    const { app, form, signIn, emails, events } = setup();
+    const t = setup();
+    const { app, form, signIn, emails, events } = t;
     const owner = await signIn("owner@example.com");
     const made = await form("/app/orgs", { name: "Team A" }, owner);
-    const link = await invitePath(await form("/app/orgs/invite", {}, `${owner}; ${cookieOf(made)}`));
+    const link = await invite(t, `${owner}; ${cookieOf(made)}`);
 
     // Signed out: sent to log in, and back to the invite afterwards.
     const out = await app.request(link);
@@ -218,10 +226,11 @@ describe("orgs", () => {
   });
 
   it("rejects an expired or unknown invite", async () => {
-    const { form, app, signIn } = setup();
+    const t = setup();
+    const { form, app, signIn } = t;
     const owner = await signIn("expiry@example.com");
     const made = await form("/app/orgs", { name: "Team Exp" }, owner);
-    const link = await invitePath(await form("/app/orgs/invite", {}, `${owner}; ${cookieOf(made)}`));
+    const link = await invite(t, `${owner}; ${cookieOf(made)}`);
     const orgId = await orgIdByName("Team Exp");
     await db.query(`UPDATE sesh.org_invites SET expires_at = now() - interval '1 minute' WHERE org_id = $1`, [orgId]);
     const guest = await signIn("late@example.com");
@@ -231,13 +240,14 @@ describe("orgs", () => {
   });
 
   it("does not let members invite", async () => {
-    const { form, signIn, events } = setup();
+    const t = setup();
+    const { form, signIn, events } = t;
     const owner = await signIn("boss@example.com");
     const made = await form("/app/orgs", { name: "Team M" }, owner);
-    const link = await invitePath(await form("/app/orgs/invite", {}, `${owner}; ${cookieOf(made)}`));
+    const link = await invite(t, `${owner}; ${cookieOf(made)}`);
     const member = await signIn("worker@example.com");
     const joined = await form(link, {}, member);
-    const res = await form("/app/orgs/invite", {}, `${member}; ${cookieOf(joined)}`);
+    const res = await form("/app/orgs/invite", { email: "x@example.com" }, `${member}; ${cookieOf(joined)}`);
     expect(res.status).toBe(403);
     expect(events.find((e) => e.event === "invite_create_rejected")!.properties).toEqual({ reason: "not_owner" });
     expect(
@@ -245,6 +255,15 @@ describe("orgs", () => {
         `SELECT count(*) AS n FROM sesh.org_invites WHERE created_by = (SELECT id FROM sesh.users WHERE email = 'worker@example.com')`,
       ),
     ).toBe(0);
+  });
+
+  it("rejects an invite to a bad email address", async () => {
+    const { form, signIn, emails, events } = setup();
+    const owner = await signIn("picky@example.com");
+    const before = emails.length;
+    expect((await form("/app/orgs/invite", { email: "nope" }, owner)).status).toBe(400);
+    expect(emails).toHaveLength(before);
+    expect(events.find((e) => e.event === "invite_create_rejected")!.properties).toEqual({ reason: "invalid_email" });
   });
 
   it("switches between orgs and refuses an org the user is not in", async () => {
@@ -268,11 +287,12 @@ describe("orgs", () => {
   });
 
   it("keeps the invite when an existing member opens it, and ignores a non-invite next path", async () => {
-    const { form, signIn, emails } = setup();
+    const t = setup();
+    const { form, signIn, emails } = t;
     const owner = await signIn("keeper@example.com");
     const made = await form("/app/orgs", { name: "Team K" }, owner);
     const active = `${owner}; ${cookieOf(made)}`;
-    const link = await invitePath(await form("/app/orgs/invite", {}, active));
+    const link = await invite(t, active);
     expect((await form(link, {}, active)).status).toBe(302);
     expect(
       await count(
