@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createApp } from "../src/app.js";
+import { createApp } from "../src/api.js";
 import type { Db } from "../src/db/index.js";
 import { openTestDb } from "../src/db/testing.js";
 import type { Email } from "../src/email.js";
