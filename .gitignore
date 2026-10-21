@@ -1,1 +1,8 @@
 .claude
+node_modules/
+.data/
+dist/
+.env
+.env.local
+.env.production
+.vercel/

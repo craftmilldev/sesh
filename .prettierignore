@@ -1,0 +1,3 @@
+.claude/
+# Prose is kept as written; Prettier pads markdown tables out to their widest cell.
+*.md

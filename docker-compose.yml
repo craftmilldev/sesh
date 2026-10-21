@@ -1,0 +1,21 @@
+# Local Postgres for the data tickets that follow the scaffold; nothing reads it yet.
+# Start it with `npm run db:up`. Version matches loopway's (Postgres 17).
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sesh
+    ports:
+      - "54330:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sesh"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
