@@ -1,5 +1,5 @@
-# Local Postgres for the data tickets that follow the scaffold; nothing reads it yet.
-# Start it with `npm run db:up`. Version matches loopway's (Postgres 17).
+# Local Postgres for `npm run dev` and `npm test`. Start it with `npm run db:up`.
+# Version matches loopway's (Postgres 17).
 services:
   postgres:
     image: postgres:17

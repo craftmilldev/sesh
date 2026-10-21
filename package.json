@@ -15,6 +15,7 @@
     "start": "npm run start -w @sesh/web",
     "db:up": "docker compose -p sesh up -d --wait",
     "db:down": "docker compose -p sesh down",
+    "db:migrate": "npm run db:migrate -w @sesh/web",
     "build": "npm run build --workspaces --if-present",
     "test": "npm test --workspaces",
     "typecheck": "npm run typecheck --workspaces",
