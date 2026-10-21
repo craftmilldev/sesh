@@ -161,7 +161,6 @@ describe("orgs", () => {
       .join("; ");
   const orgIdByName = async (name: string) =>
     (await db.query<{ id: string }>(`SELECT id FROM sesh.orgs WHERE name = $1`, [name]))[0]!.id;
-  /** The invite path (/invite/<token>) out of the page that shows the new link. */
   /** Has the cookie's owner invite someone by email, and returns the invite path from the email that went out. */
   async function invite(t: ReturnType<typeof setup>, cookie: string, to = "invitee@example.com") {
     const res = await t.form("/app/orgs/invite", { email: to }, cookie);
@@ -264,6 +263,22 @@ describe("orgs", () => {
     expect((await form("/app/orgs/invite", { email: "nope" }, owner)).status).toBe(400);
     expect(emails).toHaveLength(before);
     expect(events.find((e) => e.event === "invite_create_rejected")!.properties).toEqual({ reason: "invalid_email" });
+  });
+
+  it("caps how many invites an owner can send in a day", async () => {
+    const t = setup();
+    const owner = await t.signIn("spammer@example.com");
+    const made = await t.form("/app/orgs", { name: "Team Cap" }, owner);
+    const active = `${owner}; ${cookieOf(made)}`;
+    await db.query(
+      `INSERT INTO sesh.org_invites (id, org_id, token_hash, created_by, expires_at)
+       SELECT gen_random_uuid(), o.id, 'cap-' || g, u.id, now() + interval '1 day'
+       FROM generate_series(1, 20) g, sesh.orgs o, sesh.users u WHERE o.name = 'Team Cap' AND u.email = 'spammer@example.com'`,
+    );
+    const before = t.emails.length;
+    expect((await t.form("/app/orgs/invite", { email: "victim@example.com" }, active)).status).toBe(429);
+    expect(t.emails).toHaveLength(before);
+    expect(t.events.find((e) => e.event === "invite_create_rejected")!.properties).toEqual({ reason: "rate_limited" });
   });
 
   it("switches between orgs and refuses an org the user is not in", async () => {

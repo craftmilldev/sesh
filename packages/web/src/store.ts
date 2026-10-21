@@ -107,17 +107,27 @@ export async function createOrg(db: Db, userId: string, name: string): Promise<O
   });
 }
 
-/** Makes a one-use invite link token for an org. Only an owner can; returns undefined for anyone else. */
-export async function createInvite(db: Db, userId: string, orgId: string): Promise<string | undefined> {
+/** The most invites one owner can send in a day, so the invite email can't be used to spam. */
+export const MAX_INVITES_PER_DAY = 20;
+
+export type CreateInviteResult = { ok: true; token: string } | { ok: false; problem: "not_owner" | "rate_limited" };
+
+/** Makes a one-use invite token for an org. Only an owner can, and only up to a daily cap. */
+export async function createInvite(db: Db, userId: string, orgId: string): Promise<CreateInviteResult> {
+  const [owner] = await db.query(
+    `SELECT 1 FROM sesh.org_members WHERE org_id = $1 AND user_id = $2 AND role = 'owner'`,
+    [orgId, userId],
+  );
+  if (!owner) return { ok: false, problem: "not_owner" };
   const token = newInviteToken();
   const made = await db.query(
     `INSERT INTO sesh.org_invites (id, org_id, token_hash, created_by, expires_at)
-     SELECT $1, org_id, $2, user_id, now() + $5::int * interval '1 day'
-     FROM sesh.org_members WHERE org_id = $3 AND user_id = $4 AND role = 'owner'
+     SELECT $1, $3, $2, $4, now() + $5::int * interval '1 day'
+     WHERE (SELECT count(*) FROM sesh.org_invites WHERE created_by = $4 AND created_at > now() - interval '1 day') < $6
      RETURNING id`,
-    [uuidv7(), sha256(token), orgId, userId, INVITE_TTL_DAYS],
+    [uuidv7(), sha256(token), orgId, userId, INVITE_TTL_DAYS, MAX_INVITES_PER_DAY],
   );
-  return made.length ? token : undefined;
+  return made.length ? { ok: true, token } : { ok: false, problem: "rate_limited" };
 }
 
 export type InviteLookup = { ok: true; org: Org } | { ok: false; problem: "unknown" | "used" | "expired" };

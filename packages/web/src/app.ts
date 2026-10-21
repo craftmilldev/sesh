@@ -323,11 +323,14 @@ export function createApp(opts: AppOptions) {
       await metrics.capture("invite_create_rejected", user.id, { reason: "invalid_email" });
       return c.html(shell(c, html``, "That doesn't look like an email address."), 400);
     }
-    const token = await store.createInvite(await opts.getDb(), user.id, org.id);
-    if (!token) {
-      await metrics.capture("invite_create_rejected", user.id, { reason: "not_owner" });
-      return c.html(shell(c, html``, "Only owners can invite people."), 403);
+    const made = await store.createInvite(await opts.getDb(), user.id, org.id);
+    if (!made.ok) {
+      await metrics.capture("invite_create_rejected", user.id, { reason: made.problem });
+      return made.problem === "not_owner"
+        ? c.html(shell(c, html``, "Only owners can invite people."), 403)
+        : c.html(shell(c, html``, "You've sent a lot of invites today. Try again tomorrow."), 429);
     }
+    const token = made.token;
     await metrics.capture("invite_created", user.id);
     try {
       await sendEmail({
