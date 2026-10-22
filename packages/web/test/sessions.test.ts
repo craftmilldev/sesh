@@ -108,3 +108,42 @@ describe("session list", () => {
     expect((await t.call("/sessions")).status).toBe(401);
   });
 });
+
+describe("session detail", () => {
+  it("shows a session's prompts and events in order, with raw JSON", async () => {
+    const t = setupApp(db);
+    const session = await withSession(t, "detail@example.com");
+    const list = (await (await sessions(t, session)).json()) as Body;
+    const id = list.sessions[0]!.id as string;
+    const res = await t.call(`/sessions/${id}`, { session });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      prompts: { started_at: string; events: { occurred_at: string; raw: unknown; kind: string }[] }[];
+      unattributed_events: unknown[];
+    };
+    expect(body.prompts.length).toBe(2);
+    const events = [
+      ...body.prompts.flatMap((p) => p.events),
+      ...(body.unattributed_events as { occurred_at: string }[]),
+    ];
+    expect(events.length).toBe(4);
+    for (const p of body.prompts) {
+      const times = p.events.map((e) => Date.parse(e.occurred_at));
+      expect(times).toEqual([...times].sort((a, b) => a - b));
+    }
+    expect(body.prompts.flatMap((p) => p.events).every((e) => e.raw && typeof e.raw === "object")).toBe(true);
+    expect(t.events.find((e) => e.event === "session_detail_viewed")!.properties).toMatchObject({ prompts: 2 });
+  });
+
+  it("returns 404 for another org's session and for ids that don't exist", async () => {
+    const t = setupApp(db);
+    const owner = await withSession(t, "owner-detail@example.com");
+    const id = ((await (await sessions(t, owner)).json()) as Body).sessions[0]!.id as string;
+    const other = await t.signIn("other-detail@example.com");
+    expect((await t.call(`/sessions/${id}`, { session: other })).status).toBe(404);
+    expect((await t.call(`/sessions/${uuidv7()}`, { session: owner })).status).toBe(404);
+    expect((await t.call("/sessions/nope", { session: owner })).status).toBe(404);
+    expect(t.events.filter((e) => e.event === "session_detail_not_found").length).toBe(3);
+    expect((await t.call(`/sessions/${id}`)).status).toBe(401);
+  });
+});

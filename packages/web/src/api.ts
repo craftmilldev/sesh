@@ -37,6 +37,8 @@ async function jsonBody(c: Context): Promise<Record<string, unknown>> {
   return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
 }
 
+const publicEvent = (e: store.EventRow) => ({ ...e, occurred_at: e.occurred_at.toISOString() });
+
 const publicOrg = (o: store.Org) => ({ id: o.id, name: o.name });
 
 /** Reads a request body, giving up (undefined) as soon as it passes `max` bytes, so chunked uploads can't be buffered whole. */
@@ -243,6 +245,32 @@ export function createApp(opts: AppOptions) {
       page_size: store.SESSIONS_PAGE_SIZE,
       total,
       sessions: sessions.map((s) => ({ ...s, started_at: s.started_at.toISOString() })),
+    });
+  });
+
+  // One session with its prompts and events. A session of another org is a 404, the same as one that doesn't exist.
+  scoped.get("/sessions/:id", async (c) => {
+    const { user, org } = c.var;
+    const id = c.req.param("id");
+    const found = UUID_RE.test(id) ? await store.getSession(await opts.getDb(), org.id, id) : undefined;
+    if (!found) {
+      await metrics.capture("session_detail_not_found", user.id, { malformed_id: !UUID_RE.test(id) });
+      return fail(c, 404, "session_not_found", "No such session.");
+    }
+    await metrics.capture("session_detail_viewed", user.id, {
+      prompts: found.prompts.length,
+      events: found.events.length,
+    });
+    const { session, prompts, events } = found;
+    return c.json({
+      session: { ...session, started_at: session.started_at.toISOString() },
+      prompts: prompts.map((p) => ({
+        ...p,
+        started_at: p.started_at.toISOString(),
+        events: events.filter((e) => e.prompt_id === p.id).map(publicEvent),
+      })),
+      // Events that belong to no prompt (Claude Code didn't say which prompt caused them).
+      unattributed_events: events.filter((e) => !e.prompt_id).map(publicEvent),
     });
   });
 

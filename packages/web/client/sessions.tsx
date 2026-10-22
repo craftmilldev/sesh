@@ -67,7 +67,9 @@ export function Sessions({ orgName }: { orgName: string }) {
                 {data.sessions.map((s) => (
                   <tr key={s.id}>
                     <td>{s.user_name}</td>
-                    <td>{new Date(s.started_at).toLocaleString()}</td>
+                    <td>
+                      <a href={`/app/sessions/${s.id}`}>{new Date(s.started_at).toLocaleString()}</a>
+                    </td>
                     <td>{num(total(s))}</td>
                     <td>{num(s.input_tokens)}</td>
                     <td>{num(s.output_tokens)}</td>

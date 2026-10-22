@@ -255,14 +255,7 @@ export interface SessionRow {
   tool_calls: number;
 }
 
-/** One page of the org's sessions, newest first, with the figures summed from their events and prompts. */
-export async function listSessions(
-  db: Db,
-  orgId: string,
-  page: number,
-): Promise<{ sessions: SessionRow[]; total: number }> {
-  const rows = await db.query<Record<keyof SessionRow, string | Date>>(
-    `SELECT s.id, u.name AS user_name, s.started_at,
+const SESSION_SELECT = `SELECT s.id, u.name AS user_name, s.started_at,
             COALESCE(e.input_tokens, 0) AS input_tokens, COALESCE(e.output_tokens, 0) AS output_tokens,
             COALESCE(e.cache_read_tokens, 0) AS cache_read_tokens, COALESCE(e.cache_write_tokens, 0) AS cache_write_tokens,
             COALESCE(e.tool_calls, 0) AS tool_calls,
@@ -274,25 +267,94 @@ export async function listSessions(
               sum(cache_read_tokens) AS cache_read_tokens, sum(cache_write_tokens) AS cache_write_tokens,
               count(*) FILTER (WHERE kind = 'tool_call') AS tool_calls
        FROM sesh.events WHERE session_id = s.id
-     ) e ON true
+     ) e ON true`;
+
+const sessionRow = (r: Record<keyof SessionRow, string | Date>): SessionRow => ({
+  id: r.id as string,
+  user_name: r.user_name as string,
+  started_at: new Date(r.started_at),
+  input_tokens: Number(r.input_tokens),
+  output_tokens: Number(r.output_tokens),
+  cache_read_tokens: Number(r.cache_read_tokens),
+  cache_write_tokens: Number(r.cache_write_tokens),
+  prompts: Number(r.prompts),
+  tool_calls: Number(r.tool_calls),
+});
+
+/** One page of the org's sessions, newest first, with the figures summed from their events and prompts. */
+export async function listSessions(
+  db: Db,
+  orgId: string,
+  page: number,
+): Promise<{ sessions: SessionRow[]; total: number }> {
+  const rows = await db.query<Record<keyof SessionRow, string | Date>>(
+    `${SESSION_SELECT}
      WHERE s.org_id = $1
      ORDER BY s.started_at DESC, s.id DESC
      LIMIT $2 OFFSET $3`,
     [orgId, SESSIONS_PAGE_SIZE, (page - 1) * SESSIONS_PAGE_SIZE],
   );
   const [count] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`, [orgId]);
+  return { total: Number(count!.n), sessions: rows.map(sessionRow) };
+}
+
+export interface EventRow {
+  id: string;
+  prompt_id: string | null;
+  kind: "api_request" | "tool_call";
+  occurred_at: Date;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  cost_usd: number | null;
+  duration_ms: number | null;
+  tool_name: string | null;
+  success: boolean | null;
+  raw: unknown;
+}
+export interface PromptRow {
+  id: string;
+  prompt_length: number | null;
+  started_at: Date;
+}
+
+/** One of the org's sessions with all its prompts and events in time order; undefined when the org has no such session. */
+export async function getSession(
+  db: Db,
+  orgId: string,
+  sessionId: string,
+): Promise<{ session: SessionRow; prompts: PromptRow[]; events: EventRow[] } | undefined> {
+  const [row] = await db.query<Record<keyof SessionRow, string | Date>>(
+    `${SESSION_SELECT} WHERE s.org_id = $1 AND s.id = $2`,
+    [orgId, sessionId],
+  );
+  if (!row) return undefined;
+  const prompts = await db.query<PromptRow>(
+    `SELECT id, prompt_length, started_at FROM sesh.prompts WHERE session_id = $1 ORDER BY started_at, id`,
+    [sessionId],
+  );
+  const events = await db.query<EventRow>(
+    `SELECT id, prompt_id, kind, occurred_at, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            cost_usd, duration_ms, tool_name, success, raw
+     FROM sesh.events WHERE session_id = $1 ORDER BY occurred_at, id`,
+    [sessionId],
+  );
+  // Token counts are bigint columns, which arrive as strings.
+  const n = (v: unknown) => (v == null ? null : Number(v));
   return {
-    total: Number(count!.n),
-    sessions: rows.map((r) => ({
-      id: r.id as string,
-      user_name: r.user_name as string,
-      started_at: new Date(r.started_at),
-      input_tokens: Number(r.input_tokens),
-      output_tokens: Number(r.output_tokens),
-      cache_read_tokens: Number(r.cache_read_tokens),
-      cache_write_tokens: Number(r.cache_write_tokens),
-      prompts: Number(r.prompts),
-      tool_calls: Number(r.tool_calls),
+    session: sessionRow(row),
+    prompts: prompts.map((p) => ({ ...p, started_at: new Date(p.started_at) })),
+    events: events.map((e) => ({
+      ...e,
+      occurred_at: new Date(e.occurred_at),
+      input_tokens: n(e.input_tokens),
+      output_tokens: n(e.output_tokens),
+      cache_read_tokens: n(e.cache_read_tokens),
+      cache_write_tokens: n(e.cache_write_tokens),
+      cost_usd: n(e.cost_usd),
+      duration_ms: n(e.duration_ms),
     })),
   };
 }
