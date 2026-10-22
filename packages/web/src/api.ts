@@ -25,6 +25,10 @@ const MAX_TOKEN_NAME = 80;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** The largest OTLP request accepted, just under Vercel's own 4.5 MB request limit. */
 const MAX_INGEST_BYTES = 4 * 1024 * 1024;
+/** Status line posts are tiny; anything bigger is not one. */
+const MAX_LIMITS_BYTES = 4096;
+/** How far ahead of the server clock a snapshot's captured_at may be. */
+const MAX_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** A JSON body's text field; empty when it is missing or not a string. */
@@ -36,6 +40,18 @@ async function jsonBody(c: Context): Promise<Record<string, unknown>> {
   const body: unknown = await c.req.json().catch(() => undefined);
   return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
 }
+
+/** A 0 to 100 percentage; null when absent, "invalid" when present but not one. */
+const percent = (v: unknown) =>
+  v == null ? null : typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100 ? v : ("invalid" as const);
+
+/** A unix-seconds time as a Date; null when absent, "invalid" when present but not one. */
+const unixTime = (v: unknown) =>
+  v == null
+    ? null
+    : typeof v === "number" && Number.isFinite(v) && v > 0 && v < 1e11
+      ? new Date(v * 1000)
+      : ("invalid" as const);
 
 const publicEvent = (e: store.EventRow) => ({ ...e, occurred_at: e.occurred_at.toISOString() });
 
@@ -248,6 +264,14 @@ export function createApp(opts: AppOptions) {
     });
   });
 
+  // Each member's current 5-hour and 7-day plan usage, from their status lines.
+  scoped.get("/limits", async (c) => {
+    const { user, org } = c.var;
+    const limits = await store.currentLimits(await opts.getDb(), org.id);
+    await metrics.capture("limits_viewed", user.id, { empty: !limits.length });
+    return c.json({ limits: limits.map((l) => ({ ...l, captured_at: l.captured_at.toISOString() })) });
+  });
+
   // One session with its prompts and events. A session of another org is a 404, the same as one that doesn't exist.
   scoped.get("/sessions/:id", async (c) => {
     const { user, org } = c.var;
@@ -432,6 +456,50 @@ export function createApp(opts: AppOptions) {
     // An empty OTLP success response: `{}` for JSON, zero bytes for protobuf.
     return format === "json" ? c.json({}) : c.body(null, 200, { "content-type": "application/x-protobuf" });
   };
+  // Plan usage from the status line script. Only the session id, the two windows and the time are kept.
+  app.post("/v1/limits", async (c) => {
+    const reject = async (status: 400 | 401 | 413, reason: string, distinctId = ANONYMOUS) => {
+      await metrics.capture("limits_rejected", distinctId, { reason });
+      return c.json({ error: reason }, status, status === 401 ? { "WWW-Authenticate": "Bearer" } : {});
+    };
+    const bearer = /^Bearer\s+(\S+)$/i.exec(c.req.header("authorization") ?? "")?.[1];
+    if (!bearer) return reject(401, "missing_token");
+    const db = await opts.getDb();
+    const who = await store.findIngestToken(db, bearer);
+    if (!who) return reject(401, "invalid_token");
+    if (Number(c.req.header("content-length") ?? 0) > MAX_LIMITS_BYTES)
+      return reject(413, "payload_too_large", who.userId);
+    const body = await jsonBody(c);
+    const sessionId = field(body, "session_id");
+    if (!sessionId || sessionId.length > 200) return reject(400, "invalid_session_id", who.userId);
+    const windows = {
+      fiveHourPct: percent(body.five_hour_pct),
+      sevenDayPct: percent(body.seven_day_pct),
+      fiveHourResetsAt: unixTime(body.five_hour_resets_at),
+      sevenDayResetsAt: unixTime(body.seven_day_resets_at),
+    };
+    if (Object.values(windows).some((v) => v === "invalid")) return reject(400, "invalid_value", who.userId);
+    const { fiveHourPct, sevenDayPct, fiveHourResetsAt, sevenDayResetsAt } = windows as {
+      [K in keyof typeof windows]: Exclude<(typeof windows)[K], "invalid">;
+    };
+    if (fiveHourPct == null && sevenDayPct == null) return reject(400, "no_percentages", who.userId);
+    const capturedAt = new Date(typeof body.captured_at === "string" ? body.captured_at : NaN);
+    if (Number.isNaN(capturedAt.getTime()) || capturedAt.getTime() > Date.now() + MAX_CLOCK_SKEW_MS)
+      return reject(400, "invalid_captured_at", who.userId);
+    await store.storeLimitSnapshot(db, who, {
+      sessionId,
+      fiveHourPct,
+      fiveHourResetsAt,
+      sevenDayPct,
+      sevenDayResetsAt,
+      capturedAt,
+    });
+    await metrics.capture("limits_accepted", who.userId, {
+      has_five_hour: fiveHourPct != null,
+      has_seven_day: sevenDayPct != null,
+    });
+    return c.json({});
+  });
   app.post("/v1/logs", ingest("logs"));
   app.post("/v1/metrics", ingest("metrics"));
 

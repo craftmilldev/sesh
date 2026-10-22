@@ -165,4 +165,27 @@ ALTER TABLE sesh.prompts   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sesh.events    ENABLE ROW LEVEL SECURITY;
 `,
   },
+  {
+    version: "005_limit_snapshots",
+    sql: `
+CREATE TABLE sesh.limit_snapshots (
+  id                   uuid PRIMARY KEY,
+  org_id               uuid NOT NULL REFERENCES sesh.orgs(id) ON DELETE CASCADE,
+  user_id              uuid NOT NULL REFERENCES sesh.users(id) ON DELETE CASCADE,
+  session_external_id  text NOT NULL,
+  five_hour_pct        double precision,
+  five_hour_resets_at  timestamptz,
+  seven_day_pct        double precision,
+  seven_day_resets_at  timestamptz,
+  captured_at          timestamptz NOT NULL,
+  received_at          timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX limit_snapshots_session_idx ON sesh.limit_snapshots (org_id, user_id, session_external_id, captured_at);
+
+CREATE INDEX limit_snapshots_user_idx ON sesh.limit_snapshots (org_id, user_id, captured_at);
+
+ALTER TABLE sesh.limit_snapshots ENABLE ROW LEVEL SECURITY;
+`,
+  },
 ];

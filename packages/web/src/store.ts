@@ -241,6 +241,67 @@ export async function storeRawPayload(
   return id;
 }
 
+export interface LimitSnapshot {
+  sessionId: string;
+  fiveHourPct: number | null;
+  fiveHourResetsAt: Date | null;
+  sevenDayPct: number | null;
+  sevenDayResetsAt: Date | null;
+  capturedAt: Date;
+}
+
+/** Stores one status line reading for the token's org and user. */
+export async function storeLimitSnapshot(db: Db, who: { orgId: string; userId: string }, s: LimitSnapshot) {
+  await db.query(
+    `INSERT INTO sesh.limit_snapshots
+       (id, org_id, user_id, session_external_id, five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at, captured_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      uuidv7(),
+      who.orgId,
+      who.userId,
+      s.sessionId,
+      s.fiveHourPct,
+      s.fiveHourResetsAt,
+      s.sevenDayPct,
+      s.sevenDayResetsAt,
+      s.capturedAt,
+    ],
+  );
+}
+
+export interface UserLimits {
+  user_name: string;
+  five_hour_pct: number | null;
+  seven_day_pct: number | null;
+  captured_at: Date;
+}
+
+/**
+ * Each member's current plan usage: their latest snapshot, where a window that has already reset
+ * (its resets_at is past) counts as unknown rather than showing a stale percentage.
+ */
+export async function currentLimits(db: Db, orgId: string): Promise<UserLimits[]> {
+  const rows = await db.query<{
+    user_name: string;
+    five_hour_pct: number | null;
+    seven_day_pct: number | null;
+    captured_at: Date;
+  }>(
+    `SELECT u.name AS user_name,
+            CASE WHEN l.five_hour_resets_at > now() THEN l.five_hour_pct END AS five_hour_pct,
+            CASE WHEN l.seven_day_resets_at > now() THEN l.seven_day_pct END AS seven_day_pct,
+            l.captured_at
+     FROM sesh.users u
+     JOIN LATERAL (
+       SELECT * FROM sesh.limit_snapshots WHERE org_id = $1 AND user_id = u.id ORDER BY captured_at DESC LIMIT 1
+     ) l ON true
+     ORDER BY u.name, u.id`,
+    [orgId],
+  );
+  return rows.map((r) => ({ ...r, captured_at: new Date(r.captured_at) }));
+}
+
 export const SESSIONS_PAGE_SIZE = 25;
 
 export interface SessionRow {
@@ -253,13 +314,17 @@ export interface SessionRow {
   cache_write_tokens: number;
   prompts: number;
   tool_calls: number;
+  /** The session's latest plan usage, from its status line; null when it never posted one. */
+  five_hour_pct: number | null;
+  seven_day_pct: number | null;
 }
 
 const SESSION_SELECT = `SELECT s.id, u.name AS user_name, s.started_at,
             COALESCE(e.input_tokens, 0) AS input_tokens, COALESCE(e.output_tokens, 0) AS output_tokens,
             COALESCE(e.cache_read_tokens, 0) AS cache_read_tokens, COALESCE(e.cache_write_tokens, 0) AS cache_write_tokens,
             COALESCE(e.tool_calls, 0) AS tool_calls,
-            (SELECT count(*) FROM sesh.prompts p WHERE p.session_id = s.id) AS prompts
+            (SELECT count(*) FROM sesh.prompts p WHERE p.session_id = s.id) AS prompts,
+            l.five_hour_pct, l.seven_day_pct
      FROM sesh.sessions s
      JOIN sesh.users u ON u.id = s.user_id
      LEFT JOIN LATERAL (
@@ -267,18 +332,25 @@ const SESSION_SELECT = `SELECT s.id, u.name AS user_name, s.started_at,
               sum(cache_read_tokens) AS cache_read_tokens, sum(cache_write_tokens) AS cache_write_tokens,
               count(*) FILTER (WHERE kind = 'tool_call') AS tool_calls
        FROM sesh.events WHERE session_id = s.id
-     ) e ON true`;
+     ) e ON true
+     LEFT JOIN LATERAL (
+       SELECT five_hour_pct, seven_day_pct FROM sesh.limit_snapshots
+       WHERE org_id = s.org_id AND user_id = s.user_id AND session_external_id = s.external_id
+       ORDER BY captured_at DESC LIMIT 1
+     ) l ON s.agent = 'claude-code'`;
 
-const sessionRow = (r: Record<keyof SessionRow, string | Date>): SessionRow => ({
+const sessionRow = (r: Record<keyof SessionRow, string | number | Date | null>): SessionRow => ({
   id: r.id as string,
   user_name: r.user_name as string,
-  started_at: new Date(r.started_at),
+  started_at: new Date(r.started_at as string | Date),
   input_tokens: Number(r.input_tokens),
   output_tokens: Number(r.output_tokens),
   cache_read_tokens: Number(r.cache_read_tokens),
   cache_write_tokens: Number(r.cache_write_tokens),
   prompts: Number(r.prompts),
   tool_calls: Number(r.tool_calls),
+  five_hour_pct: r.five_hour_pct == null ? null : Number(r.five_hour_pct),
+  seven_day_pct: r.seven_day_pct == null ? null : Number(r.seven_day_pct),
 });
 
 /** One page of the org's sessions, newest first, with the figures summed from their events and prompts. */
@@ -287,7 +359,7 @@ export async function listSessions(
   orgId: string,
   page: number,
 ): Promise<{ sessions: SessionRow[]; total: number }> {
-  const rows = await db.query<Record<keyof SessionRow, string | Date>>(
+  const rows = await db.query<Record<keyof SessionRow, string | number | Date | null>>(
     `${SESSION_SELECT}
      WHERE s.org_id = $1
      ORDER BY s.started_at DESC, s.id DESC
@@ -326,7 +398,7 @@ export async function getSession(
   orgId: string,
   sessionId: string,
 ): Promise<{ session: SessionRow; prompts: PromptRow[]; events: EventRow[] } | undefined> {
-  const [row] = await db.query<Record<keyof SessionRow, string | Date>>(
+  const [row] = await db.query<Record<keyof SessionRow, string | number | Date | null>>(
     `${SESSION_SELECT} WHERE s.org_id = $1 AND s.id = $2`,
     [orgId, sessionId],
   );
