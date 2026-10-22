@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/api.js";
@@ -125,6 +126,23 @@ describe("OTLP ingest", () => {
       { signal: "logs", format: "json", gzip: false },
       { signal: "metrics", format: "json", gzip: false },
     ]);
+  });
+
+  it("parses a logs payload into a session as it arrives", async () => {
+    const t = setup();
+    const token = await t.makeToken(await t.signIn("ing0@example.com"));
+    const body = readFileSync(new URL("./fixtures/claude-code-session.json", import.meta.url), "utf8");
+    expect((await t.post("/v1/logs", body, { authorization: `Bearer ${token}` })).status).toBe(200);
+    expect(
+      await count(
+        `SELECT count(*) AS n FROM sesh.events e JOIN sesh.sessions s ON s.id = e.session_id
+         JOIN sesh.users u ON u.id = s.user_id WHERE u.email = 'ing0@example.com'`,
+      ),
+    ).toBe(4);
+    expect(t.events.find((e) => e.event === "payload_parsed")!.properties).toEqual({
+      outcome: "parsed",
+      format: "json",
+    });
   });
 
   it("stores protobuf and gzipped bodies untouched", async () => {

@@ -109,4 +109,60 @@ ALTER TABLE sesh.ingest_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sesh.raw_payloads  ENABLE ROW LEVEL SECURITY;
 `,
   },
+  {
+    version: "004_sessions_prompts_events",
+    sql: `
+CREATE TABLE sesh.sessions (
+  id           uuid PRIMARY KEY,
+  org_id       uuid NOT NULL REFERENCES sesh.orgs(id) ON DELETE CASCADE,
+  user_id      uuid NOT NULL REFERENCES sesh.users(id) ON DELETE CASCADE,
+  agent        text NOT NULL,
+  external_id  text NOT NULL,
+  started_at   timestamptz NOT NULL,
+  ended_at     timestamptz NOT NULL,
+  UNIQUE (org_id, agent, external_id)
+);
+
+CREATE INDEX sessions_org_idx ON sesh.sessions (org_id, started_at);
+
+CREATE TABLE sesh.prompts (
+  id             uuid PRIMARY KEY,
+  session_id     uuid NOT NULL REFERENCES sesh.sessions(id) ON DELETE CASCADE,
+  external_id    text NOT NULL,
+  prompt_length  integer,
+  started_at     timestamptz NOT NULL,
+  UNIQUE (session_id, external_id)
+);
+
+CREATE TABLE sesh.events (
+  id                 uuid PRIMARY KEY,
+  session_id         uuid NOT NULL REFERENCES sesh.sessions(id) ON DELETE CASCADE,
+  prompt_id          uuid REFERENCES sesh.prompts(id) ON DELETE SET NULL,
+  dedupe_key         text NOT NULL,
+  kind               text NOT NULL CHECK (kind IN ('api_request', 'tool_call')),
+  occurred_at        timestamptz NOT NULL,
+  model              text,
+  input_tokens       bigint,
+  output_tokens      bigint,
+  cache_read_tokens  bigint,
+  cache_write_tokens bigint,
+  cost_usd           double precision,
+  duration_ms        double precision,
+  tool_name          text,
+  success            boolean,
+  raw                jsonb NOT NULL,
+  UNIQUE (session_id, dedupe_key)
+);
+
+CREATE INDEX events_prompt_idx ON sesh.events (prompt_id);
+
+ALTER TABLE sesh.raw_payloads ADD COLUMN parsed_at timestamptz;
+
+ALTER TABLE sesh.sessions  ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE sesh.prompts   ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE sesh.events    ENABLE ROW LEVEL SECURITY;
+`,
+  },
 ];

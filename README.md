@@ -14,7 +14,11 @@ checked against membership on every request). Only owners invite.
 Any member can make ingest tokens on `/app` for the active org (named, shown once, stored hashed, revocable). The
 page shows the `OTEL_*` env vars to set for Claude Code, which sends OTLP/HTTP to `POST /v1/logs` and `/v1/metrics`
 with `Authorization: Bearer <token>`; the token says which org and user. Each accepted payload (JSON or protobuf,
-optionally gzipped, up to 4 MB) is stored as it arrived in `sesh.raw_payloads`. Parsing it into sessions comes later.
+optionally gzipped, up to 4 MB) is stored as it arrived in `sesh.raw_payloads`. Logs payloads are then parsed (`src/claude-code.ts`, `src/parse.ts`) into
+`sesh.sessions` (agent `claude-code`, user, started/ended), `sesh.prompts` (by `prompt.id`; length only) and `sesh.events`
+(`api_request` / `tool_call` with model, tokens, cost, duration, tool, success and the record's attributes as JSON).
+Parsing is idempotent and order-independent. Prompt text and `user.*` identity attributes are dropped before storing.
+Only JSON logs are parsed so far; protobuf payloads stay raw.
 
 The earlier statusline spike is in [`spike/statusline/`](spike/statusline/).
 
