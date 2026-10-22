@@ -180,3 +180,57 @@ describe("POST /v1/limits", () => {
     expect(res.limits).toEqual([]);
   });
 });
+
+describe("plan usage over OTLP metrics", () => {
+  async function setup(email: string) {
+    const t = setupApp(db);
+    const session: Session = await t.signIn(email);
+    const res = await t.call("/tokens", { body: { name: "t" }, session });
+    const token = ((await res.json()) as { token: string }).token;
+    const [user] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = $1`, [email]);
+    const post = (body: unknown) =>
+      t.app.request("/v1/metrics", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+    return { ...t, session, userId: user!.id, post };
+  }
+  const at = String(Date.now() * 1_000_000);
+  const point = (window: string, value: number, session: string | null = "otlp-sess") => ({
+    asDouble: value,
+    timeUnixNano: at,
+    attributes: [
+      { key: "plan.window", value: { stringValue: window } },
+      { key: "plan.resets_at", value: { intValue: String(future) } },
+      ...(session ? [{ key: "session.id", value: { stringValue: session } }] : []),
+    ],
+  });
+  const body = (points: unknown[], name = "plan.usage.utilization") => ({
+    resourceMetrics: [{ scopeMetrics: [{ metrics: [{ name, unit: "1", gauge: { dataPoints: points } }] }] }],
+  });
+  const snapshots = (userId: string) =>
+    db.query(`SELECT five_hour_pct, seven_day_pct, session_external_id FROM sesh.limit_snapshots WHERE user_id = $1`, [
+      userId,
+    ]);
+
+  it("stores a gauge reading as a limit snapshot, as percentages", async () => {
+    const t = await setup("otlp1@example.com");
+    const res = await t.post(body([point("5h", 0.25), point("7d", 0.5), point("seven_day_opus", 0.9)]));
+    expect(res.status).toBe(200);
+    expect(await snapshots(t.userId)).toEqual([
+      { five_hour_pct: 25, seven_day_pct: 50, session_external_id: "otlp-sess" },
+    ]);
+    const limits = (await (await t.call("/limits", { session: t.session })).json()) as {
+      limits: { five_hour_pct: number; seven_day_pct: number }[];
+    };
+    expect(limits.limits[0]).toMatchObject({ five_hour_pct: 25, seven_day_pct: 50 });
+  });
+
+  it("ignores other metrics, out-of-range values and points without a session", async () => {
+    const t = await setup("otlp2@example.com");
+    await t.post(body([point("5h", 0.1)], "something.else"));
+    await t.post(body([point("5h", 1.5), point("7d", 0.2, null)]));
+    expect(await snapshots(t.userId)).toEqual([]);
+  });
+});

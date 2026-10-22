@@ -143,3 +143,57 @@ export function parseClaudeCodeLogs(payload: unknown): ParsedRecord[] {
   }
   return out;
 }
+
+/** One plan usage reading from OTLP metrics: both windows as the 0 to 100 percentages the status line reports. */
+export interface PlanUsageReading {
+  sessionId: string;
+  fiveHourPct: number | null;
+  fiveHourResetsAt: Date | null;
+  sevenDayPct: number | null;
+  sevenDayResetsAt: Date | null;
+  capturedAt: Date;
+}
+
+/**
+ * Reads `plan.usage.utilization` gauges (0 to 1, one point per window, `plan.window` of `5h` or `7d`) from an OTLP/JSON
+ * metrics export. Points sharing a `session.id` and time make one reading. Other windows, points without a session
+ * and out-of-range values are skipped. Nothing here names the producer.
+ */
+export function parsePlanUsage(payload: unknown): PlanUsageReading[] {
+  const readings = new Map<string, PlanUsageReading>();
+  const resources = (payload as { resourceMetrics?: unknown[] } | null)?.resourceMetrics;
+  if (!Array.isArray(resources)) return [];
+  for (const rm of resources as { scopeMetrics?: { metrics?: unknown[] }[] }[]) {
+    for (const scope of rm.scopeMetrics ?? []) {
+      for (const metric of (scope.metrics ?? []) as { name?: string; gauge?: { dataPoints?: unknown[] } }[]) {
+        if (metric.name !== "plan.usage.utilization") continue;
+        for (const point of (metric.gauge?.dataPoints ?? []) as Record<string, unknown>[]) {
+          const attrs = attrsOf(point.attributes);
+          const sessionId = str(attrs["session.id"]);
+          const window = attrs["plan.window"];
+          const value = num(point.asDouble ?? point.asInt);
+          const nanos = num(point.timeUnixNano);
+          if (!sessionId || sessionId.length > 200 || (window !== "5h" && window !== "7d")) continue;
+          if (value === undefined || value < 0 || value > 1 || !nanos) continue;
+          const at = new Date(nanos / 1e6);
+          if (Number.isNaN(at.getTime())) continue;
+          const resets = num(attrs["plan.resets_at"]);
+          const resetsAt = resets && resets > 0 && resets < 1e11 ? new Date(resets * 1000) : null;
+          const key = `${sessionId}\0${at.getTime()}`;
+          const r = readings.get(key) ?? {
+            sessionId,
+            fiveHourPct: null,
+            fiveHourResetsAt: null,
+            sevenDayPct: null,
+            sevenDayResetsAt: null,
+            capturedAt: at,
+          };
+          if (window === "5h") Object.assign(r, { fiveHourPct: value * 100, fiveHourResetsAt: resetsAt });
+          else Object.assign(r, { sevenDayPct: value * 100, sevenDayResetsAt: resetsAt });
+          readings.set(key, r);
+        }
+      }
+    }
+  }
+  return [...readings.values()];
+}

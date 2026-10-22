@@ -4,6 +4,7 @@ import type { Db } from "./db/index.js";
 import { consoleSender, type SendEmail } from "./email.js";
 import { LOGIN_CODE_RE, normalizeLoginCode } from "./ids.js";
 import { ANONYMOUS, type Metrics, noopMetrics } from "./metrics.js";
+import { decodeJsonPayload, parsePlanUsage } from "./claude-code.js";
 import { parsePending } from "./parse.js";
 import * as store from "./store.js";
 import { signSessionToken, verifyToken } from "./tokens.js";
@@ -451,6 +452,19 @@ export function createApp(opts: AppOptions) {
       } catch (err) {
         console.error("parse failed:", err);
         await metrics.capture("payload_parse_failed", who.userId, { format, count: 1 });
+      }
+    }
+    // Plan usage gauges in a metrics payload become limit snapshots. The raw payload is already safe, so a failure is
+    // only counted.
+    if (signal === "metrics") {
+      try {
+        const json = decodeJsonPayload(body, contentType, encoding === "gzip" ? "gzip" : undefined);
+        const readings = json === undefined ? [] : parsePlanUsage(json);
+        for (const r of readings) await store.storeLimitSnapshot(db, who, r);
+        if (readings.length) await metrics.capture("plan_usage_ingested", who.userId, { readings: readings.length });
+      } catch (err) {
+        console.error("plan usage parse failed:", err);
+        await metrics.capture("plan_usage_parse_failed", who.userId, { format });
       }
     }
     // An empty OTLP success response: `{}` for JSON, zero bytes for protobuf.
