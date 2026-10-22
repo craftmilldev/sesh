@@ -265,12 +265,46 @@ export function createApp(opts: AppOptions) {
     });
   });
 
-  // Each member's current 5-hour and 7-day plan usage, from their status lines.
+  // The team's plan windows as one pool (see store.poolLeft). Names no one.
   scoped.get("/limits", async (c) => {
     const { user, org } = c.var;
-    const limits = await store.currentLimits(await opts.getDb(), org.id);
-    await metrics.capture("limits_viewed", user.id, { empty: !limits.length });
-    return c.json({ limits: limits.map((l) => ({ ...l, captured_at: l.captured_at.toISOString() })) });
+    const pool = await store.planPool(await opts.getDb(), org.id);
+    await metrics.capture("limits_viewed", user.id, { empty: !pool.five_hour_reporting && !pool.seven_day_reporting });
+    return c.json(pool);
+  });
+
+  // The org's sessions started from `since` (the viewer's local midnight) until `until` (default: now on):
+  // totals and the 5 heaviest.
+  scoped.get("/today", async (c) => {
+    const { user, org } = c.var;
+    const since = new Date(c.req.query("since") ?? "");
+    const untilRaw = c.req.query("until");
+    const until = untilRaw === undefined ? new Date("9999-01-01") : new Date(untilRaw);
+    if (Number.isNaN(since.getTime()) || Number.isNaN(until.getTime())) {
+      await metrics.capture("today_rejected", user.id, { reason: "invalid_time" });
+      return fail(c, 400, "invalid_time", "since and until must be timestamps like 2026-10-22T04:00:00.000Z.");
+    }
+    const { totals, top, orgSessions } = await store.sessionsBetween(await opts.getDb(), org.id, since, until, 5);
+    await metrics.capture("today_viewed", user.id, { empty: totals.sessions === 0, org_empty: orgSessions === 0 });
+    return c.json({
+      ...totals,
+      org_sessions: orgSessions,
+      top: top.map((s) => ({
+        id: s.id,
+        started_at: s.started_at.toISOString(),
+        tokens: s.input_tokens + s.output_tokens + s.cache_read_tokens + s.cache_write_tokens,
+        cache_read_tokens: s.cache_read_tokens,
+        prompts: s.prompts,
+        tool_calls: s.tool_calls,
+      })),
+    });
+  });
+
+  // The org's members, by name and role.
+  scoped.get("/members", async (c) => {
+    const { user, org } = c.var;
+    await metrics.capture("members_viewed", user.id);
+    return c.json({ members: await store.listMembers(await opts.getDb(), org.id) });
   });
 
   // One session with its prompts and events. A session of another org is a 404, the same as one that doesn't exist.

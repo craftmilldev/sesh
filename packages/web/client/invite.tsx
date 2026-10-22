@@ -15,7 +15,7 @@ export function InvitePage({ token }: { token: string }) {
     }
     api<{ org: { name: string } }>(`/invites/${encodeURIComponent(token)}`).then(
       (r) => setOrg(r.org),
-      (err) => setError(err instanceof ApiError ? err.message : "Something went wrong."),
+      (err) => setError(err instanceof ApiError ? err.message : "Could not reach the server."),
     );
   }, [token]);
 
@@ -26,27 +26,30 @@ export function InvitePage({ token }: { token: string }) {
       takeNext(); // the invite is spent, so don't return to it after a later sign-in
       location.replace("/app");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong.");
+      setError(err instanceof ApiError ? err.message : "Could not reach the server.");
     }
   }
 
   if (error)
     return (
-      <>
+      <div className="page signin">
         <h1>This invite doesn't work</h1>
         <p>{error} Ask an owner for a new one.</p>
         <p>
           <a href="/app">Back to sesh</a>
         </p>
-      </>
+      </div>
     );
   if (!org) return null;
   return (
-    <>
+    <div className="page signin">
+      <p className="eyebrow">Sesh · Craftmill</p>
       <h1>Join {org.name}</h1>
-      <button type="button" onClick={() => void join()}>
-        Join this org
-      </button>
-    </>
+      <p>
+        <button type="button" className="primary" onClick={() => void join()}>
+          Join this org
+        </button>
+      </p>
+    </div>
   );
 }
