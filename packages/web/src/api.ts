@@ -224,6 +224,28 @@ export function createApp(opts: AppOptions) {
     });
   });
 
+  // The org's sessions, newest first. Pages are numbered from 1.
+  scoped.get("/sessions", async (c) => {
+    const { user, org } = c.var;
+    const raw = c.req.query("page") ?? "1";
+    const page = Number(raw);
+    if (!/^\d{1,6}$/.test(raw) || page < 1) {
+      await metrics.capture("sessions_rejected", user.id, { reason: "invalid_page" });
+      return fail(c, 400, "invalid_page", "Pages are numbered from 1.");
+    }
+    const { sessions, total } = await store.listSessions(await opts.getDb(), org.id, page);
+    await metrics.capture("sessions_viewed", user.id, {
+      empty: total === 0,
+      page_beyond_end: !!total && !sessions.length,
+    });
+    return c.json({
+      page,
+      page_size: store.SESSIONS_PAGE_SIZE,
+      total,
+      sessions: sessions.map((s) => ({ ...s, started_at: s.started_at.toISOString() })),
+    });
+  });
+
   scoped.post("/orgs", async (c) => {
     const user = c.var.user;
     const name = field(await jsonBody(c), "name");

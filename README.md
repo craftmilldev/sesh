@@ -27,6 +27,10 @@ optionally gzipped, up to 4 MB) is stored as it arrived in `sesh.raw_payloads`. 
 Parsing is idempotent and order-independent. Prompt text and `user.*` identity attributes are dropped before storing.
 Only JSON logs are parsed so far; protobuf payloads stay raw.
 
+`/app` lists the active org's sessions (`GET /api/sessions?page=N`, 25 a page, newest first): who, start time, tokens in
+total and by type (input, output, cache read, cache write), prompts and tool calls, summed from `sesh.events` and
+`sesh.prompts`. An org with none shows how to connect Claude Code.
+
 The earlier statusline spike is in [`spike/statusline/`](spike/statusline/).
 
 ## Run

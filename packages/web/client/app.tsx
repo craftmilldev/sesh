@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { Sessions } from "./sessions.js";
 import { api, ApiError, clearSession, getToken, saveOrg } from "./session.js";
 
 interface Org {
@@ -91,6 +92,7 @@ export function App() {
           }
         />
       )}
+      <Sessions key={org.id} orgName={org.name} />
       <Tokens key={org.id} org={org} endpoint={me.ingest_endpoint} />
       <p>
         <button
