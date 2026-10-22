@@ -1,0 +1,16 @@
+body {
+  font:
+    18px/1.5 system-ui,
+    sans-serif;
+  max-width: 36rem;
+  margin: 6rem auto;
+  padding: 0 1rem;
+}
+input,
+button,
+select {
+  font: inherit;
+}
+.error {
+  color: #b00020;
+}

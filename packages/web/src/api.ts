@@ -1,5 +1,4 @@
 import { Hono, type Context } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html } from "hono/html";
 import type { Db } from "./db/index.js";
 import { consoleSender, type SendEmail } from "./email.js";
@@ -7,7 +6,8 @@ import { LOGIN_CODE_RE, normalizeLoginCode } from "./ids.js";
 import { ANONYMOUS, type Metrics, noopMetrics } from "./metrics.js";
 import { parsePending } from "./parse.js";
 import * as store from "./store.js";
-import { SESSION_TTL_SECONDS, signSessionToken, verifyToken } from "./tokens.js";
+import { signSessionToken, verifyToken } from "./tokens.js";
+import { createWeb } from "./ui.js";
 
 export interface AppOptions {
   getDb: () => Promise<Db>;
@@ -18,50 +18,52 @@ export interface AppOptions {
   sendEmail?: SendEmail;
 }
 
-const SESSION_COOKIE = "sesh_session";
-/** The org the user last switched to. Only a hint: it is checked against their memberships on every request. */
-const ORG_COOKIE = "sesh_org";
-/** Where to go after sign-in when an invite link sent a signed-out visitor to log in. */
-const NEXT_COOKIE = "sesh_next";
-const INVITE_PATH_RE = /^\/invite\/[A-Za-z0-9_-]{1,100}$/;
+/** The header the SPA names its active org in. Only a hint: it is checked against the user's memberships on every request. */
+export const ORG_HEADER = "x-sesh-org";
 const MAX_ORG_NAME = 80;
 const MAX_TOKEN_NAME = 80;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** The largest OTLP request accepted, just under Vercel's own 4.5 MB request limit. */
 const MAX_INGEST_BYTES = 4 * 1024 * 1024;
-const cookieOpts = (c: Context, maxAge: number) => ({
-  httpOnly: true,
-  sameSite: "Lax" as const,
-  secure: new URL(c.req.url).protocol === "https:",
-  path: "/",
-  maxAge,
-});
-/** A form field's text; empty when it is missing or a file. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** A JSON body's text field; empty when it is missing or not a string. */
 const field = (body: Record<string, unknown>, name: string) =>
   typeof body[name] === "string" ? body[name].trim() : "";
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** The JSON object a request sent; empty when the body isn't one. */
+async function jsonBody(c: Context): Promise<Record<string, unknown>> {
+  const body: unknown = await c.req.json().catch(() => undefined);
+  return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+const publicOrg = (o: store.Org) => ({ id: o.id, name: o.name });
 
 /** Reads a request body, giving up (undefined) as soon as it passes `max` bytes, so chunked uploads can't be buffered whole. */
 async function readCapped(stream: ReadableStream<Uint8Array> | null, max: number) {
   const chunks: Uint8Array[] = [];
   let size = 0;
   if (stream) {
-    for await (const chunk of stream) {
-      size += chunk.length;
-      if (size > max) return undefined;
-      chunks.push(chunk);
+    const reader = stream.getReader();
+    for (let r = await reader.read(); !r.done; r = await reader.read()) {
+      size += r.value.length;
+      if (size > max) {
+        await reader.cancel();
+        return undefined;
+      }
+      chunks.push(r.value);
     }
   }
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-const page = (title: string, body: ReturnType<typeof html>) =>
+const landing = () =>
   html`<!doctype html>
     <html lang="en">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>${title}</title>
+        <title>sesh</title>
         <style>
           body {
             font:
@@ -71,55 +73,17 @@ const page = (title: string, body: ReturnType<typeof html>) =>
             margin: 6rem auto;
             padding: 0 1rem;
           }
-          input,
-          button {
-            font: inherit;
-          }
-          .error {
-            color: #b00020;
-          }
         </style>
       </head>
       <body>
-        ${body}
+        <h1>sesh</h1>
+        <p>Session insights for Claude Code teams. It shows the shape of the work, never who did it.</p>
+        <p><a href="/login">Sign in</a></p>
       </body>
     </html>`;
 
-const emailForm = (error?: string) =>
-  page(
-    "Sign in · sesh",
-    html`<h1>Sign in to sesh</h1>
-      ${error ? html`<p class="error">${error}</p>` : ""}
-      <form method="post" action="/login">
-        <p>
-          <label>Email <input type="email" name="email" required autofocus /></label>
-        </p>
-        <p><button type="submit">Send me a code</button></p>
-      </form>`,
-  );
-
-const codeForm = (email: string, error?: string) =>
-  page(
-    "Enter your code · sesh",
-    html`<h1>Check your email</h1>
-      <p>We sent a login code to ${email}. It expires in ${store.LOGIN_CODE_TTL_MINUTES} minutes.</p>
-      ${error ? html`<p class="error">${error}</p>` : ""}
-      <form method="post" action="/login/verify">
-        <input type="hidden" name="email" value="${email}" />
-        <p>
-          <label>Code <input name="code" required autofocus autocomplete="one-time-code" /></label>
-        </p>
-        <p><button type="submit">Sign in</button></p>
-      </form>`,
-  );
-
-const inviteProblem = () =>
-  page(
-    "Invite · sesh",
-    html`<h1>This invite doesn't work</h1>
-      <p>It was already used, has expired, or never existed. Ask an owner for a new one.</p>
-      <p><a href="/app">Back to sesh</a></p>`,
-  );
+type ApiEnv = { Variables: { user: store.User } };
+type OrgEnv = { Variables: { user: store.User; org: store.Membership; orgs: store.Membership[] } };
 
 export function createApp(opts: AppOptions) {
   const metrics = opts.metrics ?? noopMetrics;
@@ -131,27 +95,27 @@ export function createApp(opts: AppOptions) {
 
   app.get("/", async (c) => {
     await metrics.capture("landing_viewed", ANONYMOUS);
-    return c.html(
-      page(
-        "sesh",
-        html`<h1>sesh</h1>
-          <p>Session insights for Claude Code teams. It shows the shape of the work, never who did it.</p>
-          <p><a href="/login">Sign in</a></p>`,
-      ),
-    );
+    return c.html(landing());
   });
 
-  app.get("/login", async (c) => {
-    await metrics.capture("login_page_viewed", ANONYMOUS);
-    return c.html(emailForm());
+  // The signed-in app is a SPA: these paths, and its bundle, are served by ui.ts and everything else is the JSON API.
+  app.route("/", createWeb({ metrics }));
+
+  const fail = (c: Context, status: 400 | 401 | 403 | 404 | 410 | 429, error: string, message: string) =>
+    c.json({ error, message }, status);
+
+  const api = new Hono<ApiEnv>();
+  api.onError((err, c) => {
+    console.error(err);
+    return c.json({ error: "server_error", message: "Something went wrong." }, 500);
   });
 
   // Email a one-time code. Answers the same whether or not a code was already sent (one per address per TTL).
-  app.post("/login", async (c) => {
-    const email = field(await c.req.parseBody(), "email");
+  api.post("/login", async (c) => {
+    const email = field(await jsonBody(c), "email");
     if (!EMAIL_RE.test(email) || email.length > 320) {
       await metrics.capture("login_rejected", ANONYMOUS, { reason: "invalid_email" });
-      return c.html(emailForm("That doesn't look like an email address."), 400);
+      return fail(c, 400, "invalid_email", "That doesn't look like an email address.");
     }
     const login = await store.createLoginCode(await opts.getDb(), email);
     await metrics.capture("login_requested", ANONYMOUS, { sent: !!login.code });
@@ -167,80 +131,197 @@ export function createApp(opts: AppOptions) {
         throw err;
       }
     }
-    return c.html(codeForm(login.email), 202);
+    return c.json({ email: login.email, ttl_minutes: store.LOGIN_CODE_TTL_MINUTES }, 202);
   });
 
-  // Trade the code for a session cookie, creating the user and their personal org if the email is new.
-  app.post("/login/verify", async (c) => {
-    const body = await c.req.parseBody();
+  // Trade the code for a session token, creating the user and their personal org if the email is new. The client keeps
+  // the token and sends it in the Authorization header; the server sets no cookie.
+  api.post("/login/verify", async (c) => {
+    const body = await jsonBody(c);
     const email = field(body, "email");
     const code = normalizeLoginCode(field(body, "code"));
     if (!EMAIL_RE.test(email) || !LOGIN_CODE_RE.test(code)) {
       await metrics.capture("verify_rejected", ANONYMOUS, { reason: "malformed" });
-      return c.html(codeForm(email, "That code doesn't look right."), 400);
+      return fail(c, 400, "malformed", "That code doesn't look right.");
     }
     const result = await store.redeemLoginCode(await opts.getDb(), email, code);
-    if ("problem" in result) {
+    if (!result.ok) {
       await metrics.capture("verify_rejected", ANONYMOUS, { reason: result.problem });
-      return c.html(codeForm(email, "That code is invalid or has expired."), 401);
+      return fail(c, 401, result.problem, "That code is invalid or has expired.");
     }
     await metrics.capture(result.created ? "signed_up" : "logged_in", result.user.id);
     const { token } = signSessionToken(result.user.id, opts.tokenSecret);
-    setCookie(c, SESSION_COOKIE, token, cookieOpts(c, SESSION_TTL_SECONDS));
-    const next = getCookie(c, NEXT_COOKIE);
-    deleteCookie(c, NEXT_COOKIE, { path: "/" });
-    return c.redirect(next && INVITE_PATH_RE.test(next) ? next : "/app");
+    return c.json({ token, user: { name: result.user.name } });
   });
 
-  app.post("/logout", async (c) => {
-    const user = await currentUser(c);
-    deleteCookie(c, SESSION_COOKIE, { path: "/" });
-    if (user) await metrics.capture("logged_out", user.id);
-    return c.redirect("/");
-  });
-
-  async function currentUser(c: Context) {
-    const token = getCookie(c, SESSION_COOKIE);
-    const claims = token ? verifyToken(token, opts.tokenSecret) : undefined;
-    return claims ? store.findUserById(await opts.getDb(), claims.sub) : undefined;
-  }
-
-  // An invite link. Signed out, it sends the visitor to log in and then back here; signed in, it asks to join.
-  app.get("/invite/:token", async (c) => {
-    const user = await currentUser(c);
-    const token = c.req.param("token");
+  // Every route below needs a valid session token in the Authorization header.
+  api.use(async (c, next) => {
+    const header = c.req.header("authorization") ?? "";
+    const bearer = /^Bearer\s+(\S+)$/i.exec(header)?.[1];
+    const claims = bearer ? verifyToken(bearer, opts.tokenSecret) : undefined;
+    const user = claims ? await store.findUserById(await opts.getDb(), claims.sub) : undefined;
     if (!user) {
-      setCookie(c, NEXT_COOKIE, `/invite/${token}`, cookieOpts(c, 60 * 60));
-      await metrics.capture("invite_redirected_to_login", ANONYMOUS);
-      return c.redirect("/login");
+      await metrics.capture("api_unauthorized", ANONYMOUS, { reason: bearer ? "invalid_session" : "signed_out" });
+      return c.json({ error: "unauthorized", message: "Sign in to continue." }, 401, { "WWW-Authenticate": "Bearer" });
     }
-    const invite = await store.findInvite(await opts.getDb(), token);
-    if ("problem" in invite) {
+    c.set("user", user);
+    await next();
+  });
+
+  // The token is a stateless JWT, so signing out is the client dropping it; this only records that it did.
+  api.post("/logout", async (c) => {
+    await metrics.capture("logged_out", c.var.user.id);
+    return c.json({ ok: true });
+  });
+
+  // An invite link's org. The invite is spent only by accepting it.
+  api.get("/invites/:token", async (c) => {
+    const user = c.var.user;
+    const invite = await store.findInvite(await opts.getDb(), c.req.param("token"));
+    if (!invite.ok) {
       await metrics.capture("invite_rejected", user.id, { reason: invite.problem, step: "view" });
-      return c.html(inviteProblem(), 410);
+      return fail(c, 410, invite.problem, "This invite was already used, has expired, or never existed.");
     }
     await metrics.capture("invite_viewed", user.id);
-    return c.html(
-      page(
-        "Join an org · sesh",
-        html`<h1>Join ${invite.org.name}</h1>
-          <form method="post" action="/invite/${token}"><button type="submit">Join this org</button></form>`,
-      ),
-    );
+    return c.json({ org: publicOrg(invite.org) });
   });
 
-  app.post("/invite/:token", async (c) => {
-    const user = await currentUser(c);
-    if (!user) return c.redirect("/login");
+  api.post("/invites/:token", async (c) => {
+    const user = c.var.user;
     const result = await store.acceptInvite(await opts.getDb(), user.id, c.req.param("token"));
-    if ("problem" in result) {
+    if (!result.ok) {
       await metrics.capture("invite_rejected", user.id, { reason: result.problem, step: "accept" });
-      return c.html(inviteProblem(), 410);
+      return fail(c, 410, result.problem, "This invite was already used, has expired, or never existed.");
     }
     await metrics.capture("invite_accepted", user.id, { already_member: result.alreadyMember });
-    setCookie(c, ORG_COOKIE, result.org.id, cookieOpts(c, SESSION_TTL_SECONDS));
-    return c.redirect("/app");
+    return c.json({ org: publicOrg(result.org), already_member: result.alreadyMember });
   });
+
+  // Org-scoped routes: the active org is the one named in the X-Sesh-Org header if the user belongs to it, otherwise
+  // the first they belong to.
+  const scoped = new Hono<OrgEnv>();
+  scoped.use(async (c, next) => {
+    const user = c.var.user;
+    const orgs = await store.userOrgs(await opts.getDb(), user.id);
+    const wanted = c.req.header(ORG_HEADER);
+    const org = orgs.find((o) => o.id === wanted) ?? orgs[0];
+    if (!org) throw new Error(`user ${user.id} belongs to no org`);
+    c.set("orgs", orgs);
+    c.set("org", org);
+    await next();
+  });
+
+  const membership = (m: store.Membership) => ({ id: m.id, name: m.name, role: m.role });
+
+  scoped.get("/me", async (c) => {
+    const { user, org, orgs } = c.var;
+    await metrics.capture("shell_viewed", user.id);
+    return c.json({
+      user: { name: user.name },
+      org: membership(org),
+      orgs: orgs.map(membership),
+      ingest_endpoint: new URL(c.req.url).origin,
+    });
+  });
+
+  scoped.post("/orgs", async (c) => {
+    const user = c.var.user;
+    const name = field(await jsonBody(c), "name");
+    if (!name || name.length > MAX_ORG_NAME) {
+      await metrics.capture("org_create_rejected", user.id, { reason: name ? "name_too_long" : "empty_name" });
+      return fail(
+        c,
+        400,
+        name ? "name_too_long" : "empty_name",
+        `Give the org a name of up to ${MAX_ORG_NAME} characters.`,
+      );
+    }
+    const org = await store.createOrg(await opts.getDb(), user.id, name);
+    await metrics.capture("org_created", user.id);
+    return c.json({ org: { ...publicOrg(org), role: "owner" } }, 201);
+  });
+
+  scoped.post("/orgs/switch", async (c) => {
+    const user = c.var.user;
+    const wanted = field(await jsonBody(c), "org");
+    const target = c.var.orgs.find((o) => o.id === wanted);
+    if (!target) {
+      await metrics.capture("org_switch_rejected", user.id, { reason: "not_a_member" });
+      return fail(c, 403, "not_a_member", "You aren't a member of that org.");
+    }
+    await metrics.capture("org_switched", user.id);
+    return c.json({ org: membership(target) });
+  });
+
+  // Invites are always for the active org, so there is no org id to tamper with.
+  scoped.post("/orgs/invite", async (c) => {
+    const { user, org } = c.var;
+    const email = field(await jsonBody(c), "email").toLowerCase();
+    if (!EMAIL_RE.test(email) || email.length > 320) {
+      await metrics.capture("invite_create_rejected", user.id, { reason: "invalid_email" });
+      return fail(c, 400, "invalid_email", "That doesn't look like an email address.");
+    }
+    const made = await store.createInvite(await opts.getDb(), user.id, org.id);
+    if (!made.ok) {
+      await metrics.capture("invite_create_rejected", user.id, { reason: made.problem });
+      return made.problem === "not_owner"
+        ? fail(c, 403, made.problem, "Only owners can invite people.")
+        : fail(c, 429, made.problem, "You've sent a lot of invites today. Try again tomorrow.");
+    }
+    await metrics.capture("invite_created", user.id);
+    try {
+      await sendEmail({
+        to: email,
+        subject: `Join ${org.name} on sesh`,
+        text: `${user.name} invited you to ${org.name} on sesh.\n\nSign in and join: ${new URL(c.req.url).origin}/invite/${made.token}\n\nThe link works once and expires in ${store.INVITE_TTL_DAYS} days.`,
+      });
+    } catch (err) {
+      await metrics.capture("invite_email_failed", user.id);
+      throw err;
+    }
+    return c.json({ email, ttl_days: store.INVITE_TTL_DAYS }, 201);
+  });
+
+  // Ingest tokens belong to the signed-in user and the active org, so there is no org id to tamper with.
+  scoped.get("/tokens", async (c) => {
+    const { user, org } = c.var;
+    const tokens = await store.listIngestTokens(await opts.getDb(), user.id, org.id);
+    return c.json({ tokens: tokens.map((t) => ({ id: t.id, name: t.name, created_at: t.created_at })) });
+  });
+
+  scoped.post("/tokens", async (c) => {
+    const { user, org } = c.var;
+    const name = field(await jsonBody(c), "name");
+    if (!name || name.length > MAX_TOKEN_NAME) {
+      await metrics.capture("token_create_rejected", user.id, { reason: name ? "name_too_long" : "empty_name" });
+      return fail(
+        c,
+        400,
+        name ? "name_too_long" : "empty_name",
+        `Give the token a name of up to ${MAX_TOKEN_NAME} characters.`,
+      );
+    }
+    const made = await store.createIngestToken(await opts.getDb(), user.id, org.id, name);
+    await metrics.capture("token_created", user.id);
+    // Shown on this response only: it is stored hashed.
+    return c.json({ id: made.id, name, token: made.token }, 201);
+  });
+
+  scoped.post("/tokens/:id/revoke", async (c) => {
+    const { user, org } = c.var;
+    const id = c.req.param("id");
+    const revoked = UUID_RE.test(id) && (await store.revokeIngestToken(await opts.getDb(), user.id, org.id, id));
+    if (!revoked) {
+      await metrics.capture("token_revoke_rejected", user.id, { reason: "not_found" });
+      return fail(c, 404, "not_found", "That token doesn't exist or was already revoked.");
+    }
+    await metrics.capture("token_revoked", user.id);
+    return c.json({ ok: true });
+  });
+
+  api.route("/", scoped);
+  api.all("*", (c) => c.json({ error: "not_found", message: "No such endpoint." }, 404));
+  app.route("/api", api);
 
   // OTLP/HTTP ingest. The bearer token says which org and user the payload is for; the body is stored as it came.
   const ingest = (signal: store.Signal) => async (c: Context) => {
@@ -303,201 +384,6 @@ export function createApp(opts: AppOptions) {
   };
   app.post("/v1/logs", ingest("logs"));
   app.post("/v1/metrics", ingest("metrics"));
-
-  // App pages: signed-out requests go to the login page. Every page is scoped to the active org.
-  const appPages = new Hono<{ Variables: { user: store.User; org: store.Membership; orgs: store.Membership[] } }>();
-  appPages.use(async (c, next) => {
-    const user = await currentUser(c);
-    if (!user) {
-      await metrics.capture("app_redirected_to_login", ANONYMOUS, {
-        reason: getCookie(c, SESSION_COOKIE) ? "invalid_session" : "signed_out",
-      });
-      return c.redirect("/login");
-    }
-    const orgs = await store.userOrgs(await opts.getDb(), user.id);
-    const wanted = getCookie(c, ORG_COOKIE);
-    const org = orgs.find((o) => o.id === wanted) ?? orgs[0];
-    if (!org) throw new Error(`user ${user.id} belongs to no org`);
-    c.set("user", user);
-    c.set("orgs", orgs);
-    c.set("org", org);
-    await next();
-  });
-
-  type AppContext = Context<{ Variables: { user: store.User; org: store.Membership; orgs: store.Membership[] } }>;
-
-  const envSnippet = (origin: string, token: string) =>
-    html`<pre>
-CLAUDE_CODE_ENABLE_TELEMETRY=1
-OTEL_LOGS_EXPORTER=otlp
-OTEL_METRICS_EXPORTER=otlp
-OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-OTEL_EXPORTER_OTLP_ENDPOINT=${origin}
-OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${token}"</pre>`;
-
-  const tokensSection = async (c: AppContext, created?: { token: string }) => {
-    const { user, org } = c.var;
-    const tokens = await store.listIngestTokens(await opts.getDb(), user.id, org.id);
-    return html`<h2>Ingest tokens for ${org.name}</h2>
-      ${
-        created
-          ? html`<p>
-                Your new token. Copy it now; it is never shown again. Set these in the environment Claude Code runs in:
-              </p>
-              ${envSnippet(new URL(c.req.url).origin, created.token)}`
-          : tokens.length
-            ? html`<p>Point Claude Code at sesh with these (use a token you saved, or make a new one):</p>
-                ${envSnippet(new URL(c.req.url).origin, "<your token>")}`
-            : ""
-      }
-      <ul>
-        ${tokens.map(
-          (t) =>
-            html`<li>
-              ${t.name}
-              <form method="post" action="/app/tokens/${t.id}/revoke" style="display:inline">
-                <button type="submit">Revoke</button>
-              </form>
-            </li>`,
-        )}
-      </ul>
-      <form method="post" action="/app/tokens">
-        <label>New token <input name="name" required maxlength="${MAX_TOKEN_NAME}" placeholder="laptop" /></label>
-        <button type="submit">Create</button>
-      </form>`;
-  };
-
-  const shell = async (c: AppContext, extra = html``, error?: string, created?: { token: string }) => {
-    const { user, org, orgs } = c.var;
-    const tokens = await tokensSection(c, created);
-    return page(
-      "sesh",
-      html`<h1>sesh</h1>
-        <p>Signed in as <strong>${user.name}</strong>.</p>
-        <p>Org: <strong>${org.name}</strong> (${org.role})</p>
-        ${error ? html`<p class="error">${error}</p>` : ""} ${extra}
-        ${
-          orgs.length > 1
-            ? html`<form method="post" action="/app/orgs/switch">
-                <label
-                  >Switch org
-                  <select name="org">
-                    ${orgs.map((o) => html`<option value="${o.id}" ${o.id === org.id ? "selected" : ""}>${o.name}</option>`)}
-                  </select></label
-                >
-                <button type="submit">Switch</button>
-              </form>`
-            : ""
-        }
-        <form method="post" action="/app/orgs">
-          <label>New org <input name="name" required maxlength="${MAX_ORG_NAME}" /></label>
-          <button type="submit">Create</button>
-        </form>
-        ${
-          org.role === "owner"
-            ? html`<form method="post" action="/app/orgs/invite">
-                <label>Invite by email <input type="email" name="email" required /></label>
-                <button type="submit">Send invite to ${org.name}</button>
-              </form>`
-            : ""
-        }
-        ${tokens}
-        <form method="post" action="/logout"><button type="submit">Sign out</button></form>`,
-    );
-  };
-
-  appPages.get("/", async (c) => {
-    await metrics.capture("shell_viewed", c.var.user.id);
-    return c.html(await shell(c));
-  });
-
-  appPages.post("/orgs", async (c) => {
-    const user = c.var.user;
-    const name = field(await c.req.parseBody(), "name");
-    if (!name || name.length > MAX_ORG_NAME) {
-      await metrics.capture("org_create_rejected", user.id, { reason: name ? "name_too_long" : "empty_name" });
-      return c.html(await shell(c, html``, `Give the org a name of up to ${MAX_ORG_NAME} characters.`), 400);
-    }
-    const org = await store.createOrg(await opts.getDb(), user.id, name);
-    await metrics.capture("org_created", user.id);
-    setCookie(c, ORG_COOKIE, org.id, cookieOpts(c, SESSION_TTL_SECONDS));
-    return c.redirect("/app");
-  });
-
-  appPages.post("/orgs/switch", async (c) => {
-    const user = c.var.user;
-    const wanted = field(await c.req.parseBody(), "org");
-    const target = c.var.orgs.find((o) => o.id === wanted);
-    if (!target) {
-      await metrics.capture("org_switch_rejected", user.id, { reason: "not_a_member" });
-      return c.html(await shell(c, html``, "You aren't a member of that org."), 403);
-    }
-    await metrics.capture("org_switched", user.id);
-    setCookie(c, ORG_COOKIE, target.id, cookieOpts(c, SESSION_TTL_SECONDS));
-    return c.redirect("/app");
-  });
-
-  // Invites are always for the active org, so there is no org id to tamper with.
-  appPages.post("/orgs/invite", async (c) => {
-    const { user, org } = c.var;
-    const email = field(await c.req.parseBody(), "email").toLowerCase();
-    if (!EMAIL_RE.test(email) || email.length > 320) {
-      await metrics.capture("invite_create_rejected", user.id, { reason: "invalid_email" });
-      return c.html(await shell(c, html``, "That doesn't look like an email address."), 400);
-    }
-    const made = await store.createInvite(await opts.getDb(), user.id, org.id);
-    if ("problem" in made) {
-      await metrics.capture("invite_create_rejected", user.id, { reason: made.problem });
-      return made.problem === "not_owner"
-        ? c.html(await shell(c, html``, "Only owners can invite people."), 403)
-        : c.html(await shell(c, html``, "You've sent a lot of invites today. Try again tomorrow."), 429);
-    }
-    const token = made.token;
-    await metrics.capture("invite_created", user.id);
-    try {
-      await sendEmail({
-        to: email,
-        subject: `Join ${org.name} on sesh`,
-        text: `${user.name} invited you to ${org.name} on sesh.\n\nSign in and join: ${new URL(c.req.url).origin}/invite/${token}\n\nThe link works once and expires in ${store.INVITE_TTL_DAYS} days.`,
-      });
-    } catch (err) {
-      await metrics.capture("invite_email_failed", user.id);
-      throw err;
-    }
-    return c.html(
-      await shell(
-        c,
-        html`<p>Invite sent to ${email}. The link works once and expires in ${store.INVITE_TTL_DAYS} days.</p>`,
-      ),
-    );
-  });
-  // Tokens belong to the signed-in user and the active org, so there is no org id to tamper with.
-  appPages.post("/tokens", async (c) => {
-    const { user, org } = c.var;
-    const name = field(await c.req.parseBody(), "name");
-    if (!name || name.length > MAX_TOKEN_NAME) {
-      await metrics.capture("token_create_rejected", user.id, { reason: name ? "name_too_long" : "empty_name" });
-      return c.html(await shell(c, html``, `Give the token a name of up to ${MAX_TOKEN_NAME} characters.`), 400);
-    }
-    const made = await store.createIngestToken(await opts.getDb(), user.id, org.id, name);
-    await metrics.capture("token_created", user.id);
-    // Shown on this response only: the page that makes it is the page that displays it.
-    return c.html(await shell(c, html``, undefined, made));
-  });
-
-  appPages.post("/tokens/:id/revoke", async (c) => {
-    const { user, org } = c.var;
-    const id = c.req.param("id");
-    const revoked = UUID_RE.test(id) && (await store.revokeIngestToken(await opts.getDb(), user.id, org.id, id));
-    if (!revoked) {
-      await metrics.capture("token_revoke_rejected", user.id, { reason: "not_found" });
-      return c.html(await shell(c, html``, "That token doesn't exist or was already revoked."), 404);
-    }
-    await metrics.capture("token_revoked", user.id);
-    return c.redirect("/app");
-  });
-
-  app.route("/app", appPages);
 
   return app;
 }
