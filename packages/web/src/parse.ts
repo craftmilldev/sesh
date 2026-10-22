@@ -86,11 +86,13 @@ export interface ParseResult {
   /** Payloads sesh can't read yet (protobuf, or not JSON), marked done so they aren't retried. */
   skipped: number;
   events: number;
+  /** Payloads whose parse threw; left unparsed for the next run. */
+  failed: number;
 }
 
 /**
- * Parses stored logs payloads that haven't been yet (all of them, or one by id), oldest first. Each payload is parsed
- * and marked in one transaction, so a failure leaves it for the next run.
+ * Parses stored logs payloads that haven't been yet (up to 50, or one by id), oldest first. Each payload is parsed
+ * and marked in one transaction; one that throws is counted and left for the next run without blocking the others.
  */
 export async function parsePending(db: Db, payloadId?: string): Promise<ParseResult> {
   const rows = await db.query<{
@@ -102,21 +104,27 @@ export async function parsePending(db: Db, payloadId?: string): Promise<ParseRes
     body: Buffer;
   }>(
     `SELECT id, org_id, user_id, content_type, content_encoding, body FROM sesh.raw_payloads
-     WHERE signal = 'logs' AND parsed_at IS NULL AND ($1::uuid IS NULL OR id = $1) ORDER BY id`,
+     WHERE signal = 'logs' AND parsed_at IS NULL AND ($1::uuid IS NULL OR id = $1) ORDER BY id LIMIT 50`,
     [payloadId ?? null],
   );
-  const result: ParseResult = { parsed: 0, skipped: 0, events: 0 };
+  const result: ParseResult = { parsed: 0, skipped: 0, events: 0, failed: 0 };
   for (const row of rows) {
     const json = decodeJsonPayload(row.body, row.content_type, row.content_encoding);
-    await db.transaction(async (tx) => {
-      if (json === undefined) {
-        result.skipped++;
-      } else {
-        result.events += await saveRecords(tx, row.org_id, row.user_id, parseClaudeCodeLogs(json));
-        result.parsed++;
-      }
-      await tx.query(`UPDATE sesh.raw_payloads SET parsed_at = now() WHERE id = $1`, [row.id]);
-    });
+    try {
+      await db.transaction(async (tx) => {
+        const events =
+          json === undefined ? 0 : await saveRecords(tx, row.org_id, row.user_id, parseClaudeCodeLogs(json));
+        await tx.query(`UPDATE sesh.raw_payloads SET parsed_at = now() WHERE id = $1`, [row.id]);
+        if (json === undefined) result.skipped++;
+        else {
+          result.parsed++;
+          result.events += events;
+        }
+      });
+    } catch (err) {
+      console.error(`parse failed for payload ${row.id}:`, err);
+      result.failed++;
+    }
   }
   return result;
 }

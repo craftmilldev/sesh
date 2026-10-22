@@ -26,8 +26,27 @@ export type ParsedRecord =
 
 type Attrs = Record<string, string | number | boolean>;
 
-/** Attributes that carry what the user typed, or who they are. They never reach the database. */
-const DROPPED_ATTRS = new Set(["prompt", "user.email", "user.id", "user.account_uuid", "user.account_id"]);
+/**
+ * The only attributes kept in an event's raw JSON. Anything else can carry what the user typed or worked on
+ * (the prompt, tool parameters and inputs, file paths, error text) or who they are (`user.*`), so it never reaches the database.
+ */
+const KEPT_ATTRS = new Set([
+  "event.name",
+  "event.timestamp",
+  "event.sequence",
+  "session.id",
+  "prompt.id",
+  "terminal.type",
+  "model",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_creation_tokens",
+  "cost_usd",
+  "duration_ms",
+  "tool_name",
+  "success",
+]);
 
 function anyValue(v: Record<string, unknown> | undefined): string | number | boolean | undefined {
   if (!v) return undefined;
@@ -43,7 +62,8 @@ function attrsOf(list: unknown): Attrs {
   if (!Array.isArray(list)) return out;
   for (const a of list as { key?: string; value?: Record<string, unknown> }[]) {
     const v = anyValue(a.value);
-    if (typeof a.key === "string" && v !== undefined) out[a.key] = v;
+    // Postgres text and jsonb can't hold a NUL.
+    if (typeof a.key === "string" && v !== undefined) out[a.key] = typeof v === "string" ? v.replaceAll("\0", "") : v;
   }
   return out;
 }
@@ -98,7 +118,7 @@ export function parseClaudeCodeLogs(payload: unknown): ParsedRecord[] {
         if (name !== "api_request" && name !== "tool_result") continue;
 
         const raw: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(attrs)) if (!DROPPED_ATTRS.has(k)) raw[k] = v;
+        for (const [k, v] of Object.entries(attrs)) if (KEPT_ATTRS.has(k)) raw[k] = v;
         const seq = num(attrs["event.sequence"]);
         out.push({
           type: "event",

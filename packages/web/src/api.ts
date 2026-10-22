@@ -274,7 +274,7 @@ export function createApp(opts: AppOptions) {
       }
     }
 
-    const payloadId = await store.storeRawPayload(db, {
+    await store.storeRawPayload(db, {
       ...who,
       signal,
       contentType,
@@ -282,17 +282,20 @@ export function createApp(opts: AppOptions) {
       body,
     });
     await metrics.capture("ingest_accepted", who.userId, { signal, format, gzip: encoding === "gzip" });
-    // Parse logs right away. The raw payload is already safe, so a failure here is only counted: the next run retries it.
+    // Parse logs right away, and sweep up any earlier payload whose parse failed. The raw payload is already safe,
+    // so a failure here is only counted.
     if (signal === "logs") {
       try {
-        const r = await parsePending(db, payloadId);
-        await metrics.capture("payload_parsed", who.userId, {
-          outcome: r.skipped ? "skipped_unreadable" : "parsed",
-          format,
-        });
+        const r = await parsePending(db);
+        if (r.failed) await metrics.capture("payload_parse_failed", who.userId, { format, count: r.failed });
+        else
+          await metrics.capture("payload_parsed", who.userId, {
+            outcome: r.skipped ? "skipped_unreadable" : "parsed",
+            format,
+          });
       } catch (err) {
         console.error("parse failed:", err);
-        await metrics.capture("payload_parse_failed", who.userId, { format });
+        await metrics.capture("payload_parse_failed", who.userId, { format, count: 1 });
       }
     }
     // An empty OTLP success response: `{}` for JSON, zero bytes for protobuf.

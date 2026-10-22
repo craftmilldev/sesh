@@ -10,6 +10,7 @@ import { storeRawPayload } from "../src/store.js";
 
 /** The shape of a Claude Code OTLP/JSON logs export for one session: two prompts, two API calls, two tool calls. */
 const fixture = readFileSync(new URL("./fixtures/claude-code-session.json", import.meta.url), "utf8");
+type FixtureDoc = { resourceLogs: { scopeLogs: { logRecords: { attributes: unknown[] }[] }[] }[] };
 const SESSION = "7c1f0a52-1111-4e0d-9a10-aaaaaaaaaaaa";
 
 let db: Db;
@@ -150,6 +151,36 @@ describe("parsing stored payloads", () => {
       ["p-2222", 9, "2026-10-20T15:02:00.000Z"],
     ]);
     expect(await n(`SELECT count(*) AS n FROM sesh.events WHERE prompt_id IS NULL`, [])).toBe(0);
+  });
+
+  it("keeps tool parameters and error text out of the raw JSON", () => {
+    const doc = JSON.parse(fixture) as FixtureDoc;
+    doc.resourceLogs[0]!.scopeLogs[0]!.logRecords[2]!.attributes.push(
+      { key: "tool_parameters", value: { stringValue: "rm -rf /secret" } },
+      { key: "error", value: { stringValue: "token abc123 rejected" } },
+    );
+    expect(JSON.stringify(parseClaudeCodeLogs(doc))).not.toMatch(/secret|abc123/);
+  });
+
+  it("strips NULs and retries a payload that failed, without blocking the rest", async () => {
+    const w = await member("par7");
+    const doc = JSON.parse(fixture) as FixtureDoc;
+    doc.resourceLogs[0]!.scopeLogs[0]!.logRecords[1]!.attributes.push({
+      key: "model",
+      value: { stringValue: "a\u0000b" },
+    });
+    await store(w, JSON.stringify(doc));
+    expect(await parsePending(db)).toMatchObject({ parsed: 1, failed: 0 });
+    const [bad] = await db.query<{ id: string }>(
+      `INSERT INTO sesh.raw_payloads (id, org_id, user_id, signal, content_type, body)
+       VALUES ($1, $2, $3, 'logs', 'application/json', $4) RETURNING id`,
+      [uuidv7(), w.orgId, w.userId, Buffer.from('{"resourceLogs":[{"scopeLogs":[{"logRecords":[null]}]}]}')],
+    );
+    await store(w, fixture.replace(SESSION, "other-session"));
+    expect(await parsePending(db)).toMatchObject({ parsed: 1, failed: 1 });
+    expect(await n(`SELECT count(*) AS n FROM sesh.raw_payloads WHERE id = $1 AND parsed_at IS NULL`, [bad!.id])).toBe(
+      1,
+    );
   });
 
   it("keeps the same session id in two orgs apart", async () => {
