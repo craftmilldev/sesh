@@ -240,3 +240,59 @@ export async function storeRawPayload(
   );
   return id;
 }
+
+export const SESSIONS_PAGE_SIZE = 25;
+
+export interface SessionRow {
+  id: string;
+  user_name: string;
+  started_at: Date;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  prompts: number;
+  tool_calls: number;
+}
+
+/** One page of the org's sessions, newest first, with the figures summed from their events and prompts. */
+export async function listSessions(
+  db: Db,
+  orgId: string,
+  page: number,
+): Promise<{ sessions: SessionRow[]; total: number }> {
+  const rows = await db.query<Record<keyof SessionRow, string | Date>>(
+    `SELECT s.id, u.name AS user_name, s.started_at,
+            COALESCE(e.input_tokens, 0) AS input_tokens, COALESCE(e.output_tokens, 0) AS output_tokens,
+            COALESCE(e.cache_read_tokens, 0) AS cache_read_tokens, COALESCE(e.cache_write_tokens, 0) AS cache_write_tokens,
+            COALESCE(e.tool_calls, 0) AS tool_calls,
+            (SELECT count(*) FROM sesh.prompts p WHERE p.session_id = s.id) AS prompts
+     FROM sesh.sessions s
+     JOIN sesh.users u ON u.id = s.user_id
+     LEFT JOIN LATERAL (
+       SELECT sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
+              sum(cache_read_tokens) AS cache_read_tokens, sum(cache_write_tokens) AS cache_write_tokens,
+              count(*) FILTER (WHERE kind = 'tool_call') AS tool_calls
+       FROM sesh.events WHERE session_id = s.id
+     ) e ON true
+     WHERE s.org_id = $1
+     ORDER BY s.started_at DESC, s.id DESC
+     LIMIT $2 OFFSET $3`,
+    [orgId, SESSIONS_PAGE_SIZE, (page - 1) * SESSIONS_PAGE_SIZE],
+  );
+  const [count] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`, [orgId]);
+  return {
+    total: Number(count!.n),
+    sessions: rows.map((r) => ({
+      id: r.id as string,
+      user_name: r.user_name as string,
+      started_at: new Date(r.started_at),
+      input_tokens: Number(r.input_tokens),
+      output_tokens: Number(r.output_tokens),
+      cache_read_tokens: Number(r.cache_read_tokens),
+      cache_write_tokens: Number(r.cache_write_tokens),
+      prompts: Number(r.prompts),
+      tool_calls: Number(r.tool_calls),
+    })),
+  };
+}

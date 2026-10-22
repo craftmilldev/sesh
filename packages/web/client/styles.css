@@ -2,7 +2,7 @@ body {
   font:
     18px/1.5 system-ui,
     sans-serif;
-  max-width: 36rem;
+  max-width: 60rem;
   margin: 6rem auto;
   padding: 0 1rem;
 }
@@ -13,4 +13,14 @@ select {
 }
 .error {
   color: #b00020;
+}
+.table-scroll {
+  overflow-x: auto;
+  font-size: 14px;
+}
+th,
+td {
+  padding: 0.25rem 0.75rem 0.25rem 0;
+  text-align: left;
+  white-space: nowrap;
 }
