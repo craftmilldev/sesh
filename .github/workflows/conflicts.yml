@@ -1,0 +1,29 @@
+name: Label merge conflicts
+
+# Labels each open PR that conflicts with its base `conflicts`, and comments asking for a rebase, so the PR's loopway
+# thread hears about it. The label comes off when the PR merges cleanly again. GitHub sends no event when a PR starts
+# conflicting, so this re-checks the open PRs on every push to main and each PR on every push to it.
+#
+# pull_request_target so PRs from forks can be labeled too; it never checks out the PR's code.
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: eps1lon/actions-label-merge-conflict@0273be72a0bbd58fcd71d0d6c02c209b50d1e5e1 # v3.1.0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          dirtyLabel: conflicts
+          # GitHub works out mergeability after the push; wait for it rather than give up on "unknown".
+          retryAfter: 30
+          retryMax: 10
+          commentOnDirty: "This PR conflicts with its base branch. Rebase onto it, resolve the conflicts, and push."
