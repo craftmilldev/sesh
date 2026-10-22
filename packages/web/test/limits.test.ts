@@ -3,7 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../src/db/index.js";
 import { openTestDb } from "../src/db/testing.js";
 import { parsePending } from "../src/parse.js";
-import { storeRawPayload } from "../src/store.js";
+import { planPool, poolLeft, storeLimitSnapshot, storeRawPayload } from "../src/store.js";
+import { uuidv7 } from "../src/ids.js";
 import { formatBar, parseInput, reportable } from "../statusline/sesh-statusline.js";
 import { type Session, setupApp } from "./harness.js";
 
@@ -157,27 +158,88 @@ describe("POST /v1/limits", () => {
     await t.post(snapshot({ session_id: id, five_hour_pct: 0, seven_day_pct: 4, captured_at: at(60_000) }));
     expect((await list())[0]).toMatchObject({ five_hour_pct: 0, seven_day_pct: 4 });
 
-    const limits = (await (await t.call("/limits", { session: t.session })).json()) as {
-      limits: { user_name: string; five_hour_pct: number | null; seven_day_pct: number | null }[];
-    };
-    expect(limits.limits).toEqual([expect.objectContaining({ user_name: "lim5", five_hour_pct: 0, seven_day_pct: 4 })]);
+    const pool = (await (await t.call("/limits", { session: t.session })).json()) as Record<string, unknown>;
+    expect(pool).toEqual({
+      members: 1,
+      five_hour_left: 100,
+      seven_day_left: 96,
+      five_hour_reporting: 1,
+      seven_day_reporting: 1,
+    });
   });
 
   it("treats a window past its reset time as unknown in the current view", async () => {
     const t = await setup("lim6@example.com");
     await t.post(snapshot({ five_hour_resets_at: Math.floor(Date.now() / 1000) - 60 }));
-    const limits = (await (await t.call("/limits", { session: t.session })).json()) as {
-      limits: { five_hour_pct: number | null; seven_day_pct: number | null }[];
-    };
-    expect(limits.limits[0]).toMatchObject({ five_hour_pct: null, seven_day_pct: 8 });
+    const pool = (await (await t.call("/limits", { session: t.session })).json()) as Record<string, unknown>;
+    expect(pool).toMatchObject({
+      five_hour_left: 100,
+      five_hour_reporting: 0,
+      seven_day_left: 92,
+      seven_day_reporting: 1,
+    });
   });
 
   it("only shows the active org's readings", async () => {
     const a = await setup("lim7@example.com");
     const b = await setup("lim8@example.com");
     await a.post(snapshot());
-    const res = (await (await b.call("/limits", { session: b.session })).json()) as { limits: unknown[] };
-    expect(res.limits).toEqual([]);
+    const res = (await (await b.call("/limits", { session: b.session })).json()) as Record<string, unknown>;
+    expect(res).toMatchObject({ five_hour_reporting: 0, seven_day_reporting: 0, five_hour_left: 100 });
+  });
+});
+
+describe("the team plan pool", () => {
+  it("is 100 minus the members' average used share, rounded", () => {
+    expect(poolLeft([25, 50], 4)).toBe(81); // 4 members, two with no reading
+    expect(poolLeft([], 3)).toBe(100); // nobody reported
+    expect(poolLeft([100, 100], 2)).toBe(0);
+    expect(poolLeft([33], 3)).toBe(89); // 100 - 11
+    expect(poolLeft([150, -5], 2)).toBe(50); // readings are clamped to 0-100
+    expect(poolLeft([40], 0)).toBe(100);
+  });
+
+  it("counts every member, those with no reading and those whose window has reset as unused", async () => {
+    const t = setupApp(db);
+    const session = await t.signIn("pool1@example.com");
+    const me = (await (await t.call("/me", { session })).json()) as { org: { id: string } };
+    const orgId = me.org.id;
+    const member = async (name: string) => {
+      const id = uuidv7();
+      await db.query(`INSERT INTO sesh.users (id, name, email) VALUES ($1, $2, $3)`, [id, name, `${name}@example.com`]);
+      await db.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`, [orgId, id]);
+      return id;
+    };
+    const [owner] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = $1`, ["pool1@example.com"]);
+    const a = owner!.id;
+    const b = await member("pool1b");
+    await member("pool1c"); // never reports
+    const d = await member("pool1d"); // reported, but the window has passed
+    const soon = new Date(Date.now() + 3600_000);
+    const read = (userId: string, five: number, resets: Date) =>
+      storeLimitSnapshot(
+        db,
+        { orgId, userId },
+        {
+          sessionId: userId,
+          fiveHourPct: five,
+          fiveHourResetsAt: resets,
+          sevenDayPct: five / 2,
+          sevenDayResetsAt: soon,
+          capturedAt: new Date(),
+        },
+      );
+    await read(a, 25, soon);
+    await read(b, 50, soon);
+    await read(d, 90, new Date(Date.now() - 60_000));
+
+    expect(await planPool(db, orgId)).toEqual({
+      members: 4,
+      five_hour_left: 81, // 100 - (25 + 50) / 4
+      seven_day_left: 79, // 100 - (12.5 + 25 + 45) / 4, rounded
+      five_hour_reporting: 2,
+      seven_day_reporting: 3,
+    });
   });
 });
 
@@ -221,10 +283,8 @@ describe("plan usage over OTLP metrics", () => {
     expect(await snapshots(t.userId)).toEqual([
       { five_hour_pct: 25, seven_day_pct: 50, session_external_id: "otlp-sess" },
     ]);
-    const limits = (await (await t.call("/limits", { session: t.session })).json()) as {
-      limits: { five_hour_pct: number; seven_day_pct: number }[];
-    };
-    expect(limits.limits[0]).toMatchObject({ five_hour_pct: 25, seven_day_pct: 50 });
+    const pool = (await (await t.call("/limits", { session: t.session })).json()) as Record<string, unknown>;
+    expect(pool).toMatchObject({ five_hour_left: 75, seven_day_left: 50 });
   });
 
   it("ignores other metrics, out-of-range values and points without a session", async () => {

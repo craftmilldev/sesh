@@ -12,6 +12,21 @@ const BUNDLE = {
   "/app.css": { url: new URL("../public/app.css", import.meta.url), type: "text/css; charset=utf-8" },
 };
 
+const FONTS = {
+  "/fonts/sorts-mill-goudy-latin-400-normal.woff2": new URL(
+    "../public/fonts/sorts-mill-goudy-latin-400-normal.woff2",
+    import.meta.url,
+  ),
+  "/fonts/sorts-mill-goudy-latin-400-italic.woff2": new URL(
+    "../public/fonts/sorts-mill-goudy-latin-400-italic.woff2",
+    import.meta.url,
+  ),
+  "/fonts/courier-prime-latin-400-normal.woff2": new URL(
+    "../public/fonts/courier-prime-latin-400-normal.woff2",
+    import.meta.url,
+  ),
+};
+
 const SHELL = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -50,7 +65,7 @@ export function createWeb(opts: WebOptions = {}) {
     return c.html(SHELL, 200, SECURITY_HEADERS);
   });
   // Whether there is a session, and whether an invite works, is decided by the API calls the page makes.
-  for (const path of ["/app", "/app/sessions/:id", "/invite/:token"])
+  for (const path of ["/app", "/app/sessions", "/app/settings", "/app/sessions/:id", "/invite/:token"])
     app.get(path, (c) => c.html(SHELL, 200, SECURITY_HEADERS));
 
   for (const [path, { url, type }] of Object.entries(BUNDLE)) {
@@ -58,6 +73,16 @@ export function createWeb(opts: WebOptions = {}) {
       const body = await readFile(url).catch(() => undefined);
       if (!body) return c.notFound(); // not built yet
       return c.body(body, 200, { "content-type": type });
+    });
+  }
+  for (const [path, url] of Object.entries(FONTS)) {
+    app.get(path, async (c) => {
+      const body = await readFile(url).catch(() => undefined);
+      if (!body) return c.notFound();
+      return c.body(body, 200, {
+        "content-type": "font/woff2",
+        "cache-control": "public, max-age=31536000, immutable",
+      });
     });
   }
   return app;

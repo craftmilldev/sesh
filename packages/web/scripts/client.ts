@@ -5,6 +5,7 @@ export const clientBuild: BuildOptions = {
   entryPoints: { app: "client/main.tsx" },
   outdir: "public",
   bundle: true,
+  external: ["/fonts/*"], // served by src/ui.ts
   format: "esm",
   target: "es2022",
   jsx: "automatic",

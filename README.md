@@ -16,9 +16,9 @@ the SPA's pages are sent with a Content-Security-Policy that allows only the app
 and a personal org they own; a returning one signs in to the same org. `/app` shows the name and active org; the API
 answers 401 to a missing or bad token and the SPA sends the user to `/login`. Users can create more orgs (they own what
 they create), and an owner can email a one-use invite link (valid 7 days) for the active org to someone; the invitee
-logs in, opens the link and joins as a member. A switcher on `/app` changes the active org. Only owners invite.
+logs in, opens the link and joins as a member. A switcher on `/app/settings` changes the active org. Only owners invite.
 
-Any member can make ingest tokens on `/app` (`/api/tokens`) for the active org (named, shown once, stored hashed, revocable). The
+Any member can make ingest tokens on `/app/settings` (`/api/tokens`) for the active org (named, shown once, stored hashed, revocable). The
 page shows the `OTEL_*` env vars to set for Claude Code, which sends OTLP/HTTP to `POST /v1/logs` and `/v1/metrics`
 with `Authorization: Bearer <token>`; the token says which org and user. Each accepted payload (JSON or protobuf,
 optionally gzipped, up to 4 MB) is stored as it arrived in `sesh.raw_payloads`. Logs payloads are then parsed (`src/claude-code.ts`, `src/parse.ts`) into
@@ -27,22 +27,27 @@ optionally gzipped, up to 4 MB) is stored as it arrived in `sesh.raw_payloads`. 
 Parsing is idempotent and order-independent. Prompt text and `user.*` identity attributes are dropped before storing.
 Only JSON logs are parsed so far; protobuf payloads stay raw.
 
-`/app` lists the active org's sessions (`GET /api/sessions?page=N`, 25 a page, newest first): who, start time, tokens in
-total and by type (input, output, cache read, cache write), prompts and tool calls, summed from `sesh.events` and
-`sesh.prompts`. An org with none shows how to connect Claude Code.
+`/app` is about the team, not individuals, and names no one. It shows today's sessions (since the viewer's local midnight,
+`GET /api/today?since=ISO`): total tokens, cache hit, prompts and tool calls, the team's plan-window pool, and the 5
+heaviest sessions with their share of the day. `/app/sessions` is the full list (`GET /api/sessions?page=N`, 25 a page,
+newest first) and `/app/sessions/<id>` one session with its prompts and events. `/app/settings` holds the member list
+(`GET /api/members`), invites, org switching and creation, and ingest tokens. An org with no sessions shows how to
+connect Claude Code. The UI is in the Craftmill house style (paper, ink, ruled lines; Sorts Mill Goudy and Courier Prime,
+self-hosted under `public/fonts/` and served by `src/ui.ts`, so the CSP stays `style-src 'self'`).
 
 Plan usage comes from the Claude Code status line, not OTel. [`packages/web/statusline/sesh-statusline.js`](packages/web/statusline/sesh-statusline.js)
 reads the status line JSON, prints `5h N% | 7d N%`, and at most once a minute posts the session id and the two windows'
 used percentage and reset time to `POST /v1/limits` (same bearer ingest token; 401 and nothing stored otherwise), which
 stores a `sesh.limit_snapshots` row. Everything else in the input is dropped. The post runs in a detached process with a
-5 second timeout and every error is swallowed, so a down server never slows or breaks the status line. The session list
-shows each session's latest 5h and 7d %, a dash when it never posted one, and "Plan usage now" lists each member's latest
-reading (`GET /api/limits`; a window past its reset time shows a dash). Headless `claude -p` never runs the status line, so a runner that drives it (loopway) reports plan usage as OTLP
+5 second timeout and every error is swallowed, so a down server never slows or breaks the status line. `GET /api/limits` turns the latest readings into one team pool: each org member is an equal share, a member's share used is
+their latest reading, and a member with none (never posted, or the window has reset) counts as 0% used, so
+`left = 100 - (sum of used %) / members`, rounded. It returns `{ members, five_hour_left, seven_day_left,
+five_hour_reporting, seven_day_reporting }`. Headless `claude -p` never runs the status line, so a runner that drives it (loopway) reports plan usage as OTLP
 instead: a `plan.usage.utilization` gauge (0 to 1) with one point per window (`plan.window` `5h` or `7d`), `plan.resets_at`
 (unix seconds) and `session.id`, sent to `POST /v1/metrics` with the same ingest token. Points sharing a session and time
 become one `sesh.limit_snapshots` row (percent = utilization x 100); other windows are ignored. JSON metrics only.
 
-To install it, copy the script somewhere stable, make an ingest token on `/app`, and add to `~/.claude/settings.json`:
+To install it, copy the script somewhere stable, make an ingest token on `/app/settings`, and add to `~/.claude/settings.json`:
 
 ```json
 {

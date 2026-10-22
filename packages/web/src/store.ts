@@ -302,6 +302,48 @@ export async function currentLimits(db: Db, orgId: string): Promise<UserLimits[]
   return rows.map((r) => ({ ...r, captured_at: new Date(r.captured_at) }));
 }
 
+/** An org's members, owners first. */
+export async function listMembers(db: Db, orgId: string): Promise<{ name: string; role: Role }[]> {
+  return db.query<{ name: string; role: Role }>(
+    `SELECT u.name, m.role FROM sesh.org_members m JOIN sesh.users u ON u.id = m.user_id
+     WHERE m.org_id = $1 ORDER BY (m.role = 'owner') DESC, m.created_at, u.id`,
+    [orgId],
+  );
+}
+
+export interface PlanPool {
+  members: number;
+  five_hour_left: number;
+  seven_day_left: number;
+  five_hour_reporting: number;
+  seven_day_reporting: number;
+}
+
+/**
+ * The team's plan window as one pool: every member is an equal 1/N share of 100%, a member's share used is their
+ * current reading, and a member with none (never reported, or the window has reset) counts as 0% used.
+ */
+export function poolLeft(used: number[], members: number): number {
+  if (members <= 0) return 100;
+  const sum = used.reduce((a, u) => a + Math.min(100, Math.max(0, u)), 0);
+  return Math.round(100 - sum / members);
+}
+
+export async function planPool(db: Db, orgId: string): Promise<PlanPool> {
+  const [row] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.org_members WHERE org_id = $1`, [orgId]);
+  const members = Number(row!.n);
+  const limits = await currentLimits(db, orgId);
+  const five = limits.map((l) => l.five_hour_pct).filter((v) => v != null);
+  const seven = limits.map((l) => l.seven_day_pct).filter((v) => v != null);
+  return {
+    members,
+    five_hour_left: poolLeft(five, members),
+    seven_day_left: poolLeft(seven, members),
+    five_hour_reporting: five.length,
+    seven_day_reporting: seven.length,
+  };
+}
+
 export const SESSIONS_PAGE_SIZE = 25;
 
 export interface SessionRow {
@@ -428,5 +470,52 @@ export async function getSession(
       cost_usd: n(e.cost_usd),
       duration_ms: n(e.duration_ms),
     })),
+  };
+}
+
+const TOTAL_TOKENS = `(COALESCE(e.input_tokens, 0) + COALESCE(e.output_tokens, 0) + COALESCE(e.cache_read_tokens, 0) + COALESCE(e.cache_write_tokens, 0))`;
+
+export interface DayTotals {
+  sessions: number;
+  tokens: number;
+  cache_read_tokens: number;
+  prompts: number;
+  tool_calls: number;
+}
+
+/** The org's sessions started in [since, until), summed, and the heaviest `top` of them by total tokens. */
+export async function sessionsBetween(
+  db: Db,
+  orgId: string,
+  since: Date,
+  until: Date,
+  top: number,
+): Promise<{ totals: DayTotals; top: SessionRow[]; orgSessions: number }> {
+  const [t] = await db.query<Record<keyof DayTotals, string>>(
+    `SELECT count(*) AS sessions,
+            COALESCE(sum(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS tokens,
+            COALESCE(sum(cache_read_tokens), 0) AS cache_read_tokens,
+            COALESCE(sum(prompts), 0) AS prompts, COALESCE(sum(tool_calls), 0) AS tool_calls
+     FROM (${SESSION_SELECT} WHERE s.org_id = $1 AND s.started_at >= $2 AND s.started_at < $3) t`,
+    [orgId, since, until],
+  );
+  const rows = await db.query<Record<keyof SessionRow, string | number | Date | null>>(
+    `${SESSION_SELECT}
+     WHERE s.org_id = $1 AND s.started_at >= $2 AND s.started_at < $3
+     ORDER BY ${TOTAL_TOKENS} DESC, s.started_at DESC, s.id DESC
+     LIMIT $4`,
+    [orgId, since, until, top],
+  );
+  const [all] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`, [orgId]);
+  return {
+    totals: {
+      sessions: Number(t!.sessions),
+      tokens: Number(t!.tokens),
+      cache_read_tokens: Number(t!.cache_read_tokens),
+      prompts: Number(t!.prompts),
+      tool_calls: Number(t!.tool_calls),
+    },
+    top: rows.map(sessionRow),
+    orgSessions: Number(all!.n),
   };
 }
