@@ -31,6 +31,26 @@ Only JSON logs are parsed so far; protobuf payloads stay raw.
 total and by type (input, output, cache read, cache write), prompts and tool calls, summed from `sesh.events` and
 `sesh.prompts`. An org with none shows how to connect Claude Code.
 
+Plan usage comes from the Claude Code status line, not OTel. [`packages/web/statusline/sesh-statusline.js`](packages/web/statusline/sesh-statusline.js)
+reads the status line JSON, prints `5h N% | 7d N%`, and at most once a minute posts the session id and the two windows'
+used percentage and reset time to `POST /v1/limits` (same bearer ingest token; 401 and nothing stored otherwise), which
+stores a `sesh.limit_snapshots` row. Everything else in the input is dropped. The post runs in a detached process with a
+5 second timeout and every error is swallowed, so a down server never slows or breaks the status line. The session list
+shows each session's latest 5h and 7d %, a dash when it never posted one, and "Plan usage now" lists each member's latest
+reading (`GET /api/limits`; a window past its reset time shows a dash). Headless `claude -p` never runs the status line,
+so it reports nothing.
+
+To install it, copy the script somewhere stable, make an ingest token on `/app`, and add to `~/.claude/settings.json`:
+
+```json
+{
+  "env": { "SESH_URL": "https://<your sesh origin>", "SESH_TOKEN": "<ingest token>" },
+  "statusLine": { "type": "command", "command": "node /abs/path/to/sesh-statusline.js" }
+}
+```
+
+Without `SESH_URL` and `SESH_TOKEN` it only prints the bar. `SESH_STATE_DIR` (default `~/.sesh`) holds the throttle file.
+
 The earlier statusline spike is in [`spike/statusline/`](spike/statusline/).
 
 ## Run

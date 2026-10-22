@@ -11,6 +11,13 @@ interface Session {
   cache_write_tokens: number;
   prompts: number;
   tool_calls: number;
+  five_hour_pct: number | null;
+  seven_day_pct: number | null;
+}
+interface UserLimits {
+  user_name: string;
+  five_hour_pct: number | null;
+  seven_day_pct: number | null;
 }
 interface Page {
   page: number;
@@ -20,12 +27,21 @@ interface Page {
 }
 
 const num = (n: number) => n.toLocaleString("en-US");
+/** A percentage, or a dash when there is no reading (which is not the same as 0%). */
+const pct = (n: number | null) => (n == null ? "–" : `${Math.round(n)}%`);
 const total = (s: Session) => s.input_tokens + s.output_tokens + s.cache_read_tokens + s.cache_write_tokens;
 
 export function Sessions({ orgName }: { orgName: string }) {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<Page>();
+  const [limits, setLimits] = useState<UserLimits[]>([]);
   const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    api<{ limits: UserLimits[] }>("/limits")
+      .then((r) => setLimits(r.limits))
+      .catch(() => setLimits([]));
+  }, []);
 
   useEffect(() => {
     setError(undefined);
@@ -41,6 +57,29 @@ export function Sessions({ orgName }: { orgName: string }) {
   return (
     <>
       <h2>Sessions in {orgName}</h2>
+      {limits.length > 0 && (
+        <>
+          <h3>Plan usage now</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Who</th>
+                <th>5h</th>
+                <th>7d</th>
+              </tr>
+            </thead>
+            <tbody>
+              {limits.map((l) => (
+                <tr key={l.user_name}>
+                  <td>{l.user_name}</td>
+                  <td>{pct(l.five_hour_pct)}</td>
+                  <td>{pct(l.seven_day_pct)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
       {data.total === 0 ? (
         <p>
           No sessions yet. To connect Claude Code, create an ingest token below and set the environment variables shown
@@ -61,6 +100,8 @@ export function Sessions({ orgName }: { orgName: string }) {
                   <th>Cache write</th>
                   <th>Prompts</th>
                   <th>Tool calls</th>
+                  <th>5h</th>
+                  <th>7d</th>
                 </tr>
               </thead>
               <tbody>
@@ -77,6 +118,8 @@ export function Sessions({ orgName }: { orgName: string }) {
                     <td>{num(s.cache_write_tokens)}</td>
                     <td>{num(s.prompts)}</td>
                     <td>{num(s.tool_calls)}</td>
+                    <td>{pct(s.five_hour_pct)}</td>
+                    <td>{pct(s.seven_day_pct)}</td>
                   </tr>
                 ))}
               </tbody>
