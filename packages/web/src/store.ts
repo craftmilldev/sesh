@@ -231,10 +231,12 @@ export type Signal = "logs" | "metrics";
 export async function storeRawPayload(
   db: Db,
   p: { orgId: string; userId: string; signal: Signal; contentType: string; contentEncoding?: string; body: Uint8Array },
-): Promise<void> {
+): Promise<string> {
+  const id = uuidv7();
   await db.query(
     `INSERT INTO sesh.raw_payloads (id, org_id, user_id, signal, content_type, content_encoding, body)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [uuidv7(), p.orgId, p.userId, p.signal, p.contentType, p.contentEncoding ?? null, Buffer.from(p.body)],
+    [id, p.orgId, p.userId, p.signal, p.contentType, p.contentEncoding ?? null, Buffer.from(p.body)],
   );
+  return id;
 }

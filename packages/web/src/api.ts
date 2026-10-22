@@ -5,6 +5,7 @@ import type { Db } from "./db/index.js";
 import { consoleSender, type SendEmail } from "./email.js";
 import { LOGIN_CODE_RE, normalizeLoginCode } from "./ids.js";
 import { ANONYMOUS, type Metrics, noopMetrics } from "./metrics.js";
+import { parsePending } from "./parse.js";
 import * as store from "./store.js";
 import { SESSION_TTL_SECONDS, signSessionToken, verifyToken } from "./tokens.js";
 
@@ -273,7 +274,7 @@ export function createApp(opts: AppOptions) {
       }
     }
 
-    await store.storeRawPayload(db, {
+    const payloadId = await store.storeRawPayload(db, {
       ...who,
       signal,
       contentType,
@@ -281,6 +282,19 @@ export function createApp(opts: AppOptions) {
       body,
     });
     await metrics.capture("ingest_accepted", who.userId, { signal, format, gzip: encoding === "gzip" });
+    // Parse logs right away. The raw payload is already safe, so a failure here is only counted: the next run retries it.
+    if (signal === "logs") {
+      try {
+        const r = await parsePending(db, payloadId);
+        await metrics.capture("payload_parsed", who.userId, {
+          outcome: r.skipped ? "skipped_unreadable" : "parsed",
+          format,
+        });
+      } catch (err) {
+        console.error("parse failed:", err);
+        await metrics.capture("payload_parse_failed", who.userId, { format });
+      }
+    }
     // An empty OTLP success response: `{}` for JSON, zero bytes for protobuf.
     return format === "json" ? c.json({}) : c.body(null, 200, { "content-type": "application/x-protobuf" });
   };
