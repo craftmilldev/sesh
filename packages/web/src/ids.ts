@@ -31,3 +31,6 @@ export function safeEqual(a: string, b: string): boolean {
 
 /** An unguessable invite token for a link. */
 export const newInviteToken = () => randomBytes(24).toString("base64url");
+
+/** An ingest token: the prefix makes a leaked one easy to spot and scan for. */
+export const newIngestToken = () => `sesh_${randomBytes(24).toString("base64url")}`;

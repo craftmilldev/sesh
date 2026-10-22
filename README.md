@@ -9,7 +9,12 @@ gets a user and a personal org they own; a returning one signs in to the same or
 (name and active org); signed-out requests to `/app` redirect to `/login`. Users can create more orgs (they own
 what they create), and an owner can email a one-use invite link (valid 7 days) for the active org to someone; the invitee logs in,
 opens the link and joins as a member. A switcher on `/app` changes the active org (kept in the `sesh_org` cookie and
-checked against membership on every request). Only owners invite. Ingest comes later.
+checked against membership on every request). Only owners invite.
+
+Any member can make ingest tokens on `/app` for the active org (named, shown once, stored hashed, revocable). The
+page shows the `OTEL_*` env vars to set for Claude Code, which sends OTLP/HTTP to `POST /v1/logs` and `/v1/metrics`
+with `Authorization: Bearer <token>`; the token says which org and user. Each accepted payload (JSON or protobuf,
+optionally gzipped, up to 4 MB) is stored as it arrived in `sesh.raw_payloads`. Parsing it into sessions comes later.
 
 The earlier statusline spike is in [`spike/statusline/`](spike/statusline/).
 
