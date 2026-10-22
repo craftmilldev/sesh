@@ -37,8 +37,10 @@ used percentage and reset time to `POST /v1/limits` (same bearer ingest token; 4
 stores a `sesh.limit_snapshots` row. Everything else in the input is dropped. The post runs in a detached process with a
 5 second timeout and every error is swallowed, so a down server never slows or breaks the status line. The session list
 shows each session's latest 5h and 7d %, a dash when it never posted one, and "Plan usage now" lists each member's latest
-reading (`GET /api/limits`; a window past its reset time shows a dash). Headless `claude -p` never runs the status line,
-so it reports nothing.
+reading (`GET /api/limits`; a window past its reset time shows a dash). Headless `claude -p` never runs the status line, so a runner that drives it (loopway) reports plan usage as OTLP
+instead: a `plan.usage.utilization` gauge (0 to 1) with one point per window (`plan.window` `5h` or `7d`), `plan.resets_at`
+(unix seconds) and `session.id`, sent to `POST /v1/metrics` with the same ingest token. Points sharing a session and time
+become one `sesh.limit_snapshots` row (percent = utilization x 100); other windows are ignored. JSON metrics only.
 
 To install it, copy the script somewhere stable, make an ingest token on `/app`, and add to `~/.claude/settings.json`:
 
