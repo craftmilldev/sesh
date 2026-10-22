@@ -5,7 +5,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig(
-  { ignores: ["**/dist/", ".claude/", ".data/"] },
+  { ignores: ["**/dist/", "**/public/", ".claude/", ".data/"] },
   js.configs.recommended,
   tseslint.configs.recommendedTypeChecked,
   {
@@ -19,6 +19,7 @@ export default defineConfig(
     // An async function with no await is how we satisfy interfaces that return promises.
     rules: { "@typescript-eslint/require-await": "off" },
   },
+  { files: ["packages/web/client/**"], languageOptions: { globals: globals.browser } },
   { files: ["**/*.js"], extends: [tseslint.configs.disableTypeChecked] },
   // Last, so it turns off any rule that would fight Prettier's formatting.
   prettier,

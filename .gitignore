@@ -6,3 +6,4 @@ dist/
 .env.local
 .env.production
 .vercel/
+public/

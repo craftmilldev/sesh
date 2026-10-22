@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createApp } from "../src/api.js";
 import type { Db } from "../src/db/index.js";
 import { openTestDb } from "../src/db/testing.js";
-import type { Email } from "../src/email.js";
-import type { Metrics } from "../src/metrics.js";
+import { type Session, setupApp } from "./harness.js";
 
 let db: Db;
 beforeAll(async () => {
@@ -16,38 +14,18 @@ afterAll(async () => {
 });
 
 function setup() {
-  const events: { event: string; distinctId: string; properties?: Record<string, unknown> }[] = [];
-  const emails: Email[] = [];
-  const metrics: Metrics = {
-    capture: async (event, distinctId, properties) => void events.push({ event, distinctId, properties }),
-  };
-  const app = createApp({
-    getDb: async () => db,
-    tokenSecret: "test-secret",
-    metrics,
-    sendEmail: async (e) => void emails.push(e),
-  });
-  const form = (path: string, fields: Record<string, string>, cookie?: string) =>
-    app.request(path, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", ...(cookie ? { cookie } : {}) },
-      body: new URLSearchParams(fields).toString(),
-    });
-  async function signIn(email: string) {
-    await form("/login", { email });
-    const code = /code is ([0-9A-Z]{8})/.exec(emails.at(-1)!.text)![1]!;
-    const res = await form("/login/verify", { email, code });
-    return res.headers.get("set-cookie")!.split(";")[0]!;
-  }
-  /** Makes a token as the signed-in user and returns the secret from the page that shows it once. */
-  async function makeToken(cookie: string, name = "work-mac") {
-    const res = await form("/app/tokens", { name }, cookie);
-    expect(res.status).toBe(200);
-    return /Bearer (sesh_[\w-]+)/.exec(await res.text())![1]!;
+  const t = setupApp(db);
+  /** Makes a token as the signed-in user and returns its secret, which only that response shows. */
+  async function makeToken(session: Session, name = "work-mac") {
+    const res = await t.call("/tokens", { body: { name }, session });
+    expect(res.status).toBe(201);
+    return ((await res.json()) as { token: string }).token;
   }
   const post = (path: string, body: string | Uint8Array<ArrayBuffer>, headers: Record<string, string> = {}) =>
-    app.request(path, { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
-  return { app, events, form, signIn, makeToken, post };
+    t.app.request(path, { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
+  const listed = async (session: Session) =>
+    ((await (await t.call("/tokens", { session })).json()) as { tokens: { id: string; name: string }[] }).tokens;
+  return { ...t, makeToken, post, listed };
 }
 
 const count = async (sql: string) => Number((await db.query<{ n: string }>(sql))[0]!.n);
@@ -61,22 +39,21 @@ const payloads = (email: string) =>
 describe("tokens", () => {
   it("shows a new token once, stores only its hash, lists it and revokes it", async () => {
     const t = setup();
-    const cookie = await t.signIn("tok1@example.com");
-    const token = await t.makeToken(cookie, "work-mac");
+    const session = await t.signIn("tok1@example.com");
+    const token = await t.makeToken(session, "work-mac");
     expect(await count(`SELECT count(*) AS n FROM sesh.ingest_tokens WHERE token_hash = '${token}'`)).toBe(0);
 
-    const page = await (await t.app.request("/app", { headers: { cookie } })).text();
-    expect(page).toContain("work-mac");
-    expect(page).not.toContain(token);
-    expect(page).toContain("OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost");
+    const tokens = await t.listed(session);
+    expect(tokens.map((x) => x.name)).toEqual(["work-mac"]);
+    expect(JSON.stringify(tokens)).not.toContain(token);
+    const me = (await (await t.call("/me", { session })).json()) as { ingest_endpoint: string };
+    expect(me.ingest_endpoint).toBe("http://localhost");
 
-    const [row] = await db.query<{ id: string }>(
-      `SELECT t.id FROM sesh.ingest_tokens t JOIN sesh.users u ON u.id = t.user_id WHERE u.email = 'tok1@example.com'`,
-    );
-    expect((await t.form(`/app/tokens/${row!.id}/revoke`, {}, cookie)).status).toBe(302);
-    expect((await t.form(`/app/tokens/${row!.id}/revoke`, {}, cookie)).status).toBe(404);
-    expect((await t.form(`/app/tokens/not-a-uuid/revoke`, {}, cookie)).status).toBe(404);
-    expect(await (await t.app.request("/app", { headers: { cookie } })).text()).not.toContain("work-mac");
+    const id = tokens[0]!.id;
+    expect((await t.call(`/tokens/${id}/revoke`, { body: {}, session })).status).toBe(200);
+    expect((await t.call(`/tokens/${id}/revoke`, { body: {}, session })).status).toBe(404);
+    expect((await t.call(`/tokens/not-a-uuid/revoke`, { body: {}, session })).status).toBe(404);
+    expect(await t.listed(session)).toEqual([]);
     expect(t.events.map((e) => e.event)).toEqual(
       expect.arrayContaining(["token_created", "token_revoked", "token_revoke_rejected"]),
     );
@@ -84,10 +61,11 @@ describe("tokens", () => {
 
   it("rejects an empty name and requires sign-in", async () => {
     const t = setup();
-    const cookie = await t.signIn("tok2@example.com");
-    expect((await t.form("/app/tokens", { name: "" }, cookie)).status).toBe(400);
+    const session = await t.signIn("tok2@example.com");
+    expect((await t.call("/tokens", { body: { name: "" }, session })).status).toBe(400);
     expect(t.events.find((e) => e.event === "token_create_rejected")!.properties).toEqual({ reason: "empty_name" });
-    expect((await t.form("/app/tokens", { name: "x" })).status).toBe(302);
+    expect((await t.call("/tokens", { body: { name: "x" } })).status).toBe(401);
+    expect((await t.call("/tokens")).status).toBe(401);
   });
 
   it("won't let another user revoke a token", async () => {
@@ -98,7 +76,7 @@ describe("tokens", () => {
     const [row] = await db.query<{ id: string }>(
       `SELECT t.id FROM sesh.ingest_tokens t JOIN sesh.users u ON u.id = t.user_id WHERE u.email = 'tok3@example.com'`,
     );
-    expect((await t.form(`/app/tokens/${row!.id}/revoke`, {}, other)).status).toBe(404);
+    expect((await t.call(`/tokens/${row!.id}/revoke`, { body: {}, session: other })).status).toBe(404);
     expect(
       await count(`SELECT count(*) AS n FROM sesh.ingest_tokens WHERE id = '${row!.id}' AND revoked_at IS NULL`),
     ).toBe(1);
@@ -164,8 +142,8 @@ describe("OTLP ingest", () => {
 
   it("answers 401 and stores nothing for a missing, wrong or revoked token", async () => {
     const t = setup();
-    const cookie = await t.signIn("ing3@example.com");
-    const token = await t.makeToken(cookie);
+    const session = await t.signIn("ing3@example.com");
+    const token = await t.makeToken(session);
     expect((await t.post("/v1/logs", logs)).status).toBe(401);
     expect((await t.post("/v1/logs", logs, { authorization: "Bearer sesh_nope" })).status).toBe(401);
     expect((await t.post("/v1/logs", logs, { authorization: token })).status).toBe(401);
@@ -175,7 +153,7 @@ describe("OTLP ingest", () => {
     const [row] = await db.query<{ id: string }>(
       `SELECT t.id FROM sesh.ingest_tokens t JOIN sesh.users u ON u.id = t.user_id WHERE u.email = 'ing3@example.com'`,
     );
-    await t.form(`/app/tokens/${row!.id}/revoke`, {}, cookie);
+    await t.call(`/tokens/${row!.id}/revoke`, { body: {}, session });
     const revoked = await t.post("/v1/metrics", logs, { authorization: `Bearer ${token}` });
     expect(revoked.status).toBe(401);
     expect(revoked.headers.get("www-authenticate")).toBe("Bearer");
@@ -190,15 +168,12 @@ describe("OTLP ingest", () => {
 
   it("uses the org the token was made in, not the active one", async () => {
     const t = setup();
-    const cookie = await t.signIn("ing4@example.com");
-    const token = await t.makeToken(cookie);
-    const made = await t.form("/app/orgs", { name: "Second Org" }, cookie);
-    const other = `${cookie}; ${made.headers
-      .getSetCookie()
-      .map((c) => c.split(";")[0])
-      .join("; ")}`;
+    const session = await t.signIn("ing4@example.com");
+    const token = await t.makeToken(session);
+    const made = await t.call("/orgs", { body: { name: "Second Org" }, session });
+    const other = { ...session, org: ((await made.json()) as { org: { id: string } }).org.id };
     // The new org has no tokens of its own yet.
-    expect(await (await t.app.request("/app", { headers: { cookie: other } })).text()).not.toContain("work-mac");
+    expect(await t.listed(other)).toEqual([]);
     await t.post("/v1/logs", logs, { authorization: `Bearer ${token}` });
     expect((await payloads("ing4@example.com")).map((r) => r.org_name)).toEqual(["ing4"]);
   });
