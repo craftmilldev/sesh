@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
 import { Sessions } from "./sessions.js";
 import { api, ApiError, clearSession, getToken, saveOrg } from "./session.js";
 
@@ -92,8 +92,11 @@ export function App() {
           }
         />
       )}
-      <Sessions key={org.id} orgName={org.name} />
-      <Tokens key={org.id} org={org} endpoint={me.ingest_endpoint} />
+      {/* One key for both, so a switch remounts them together; sibling keys must be unique. */}
+      <Fragment key={org.id}>
+        <Sessions orgName={org.name} />
+        <Tokens org={org} endpoint={me.ingest_endpoint} />
+      </Fragment>
       <p>
         <button
           type="button"
