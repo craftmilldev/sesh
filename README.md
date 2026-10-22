@@ -56,7 +56,7 @@ CI runs the same four on every pull request and on `main`.
 
 ## Deploy
 
-sesh deploys to Vercel the way loopway does: Vercel detects Hono at `packages/web/src/index.ts`, and only `main` deploys
+sesh deploys to Vercel the way loopway does: Vercel uploads only the Root Directory, so `packages/web/tsconfig.json` must not extend a file outside it (a test enforces this). Vercel detects Hono at `packages/web/src/index.ts`, and only `main` deploys
 (`packages/web/vercel.json`). One-time setup, which needs a Vercel login:
 
 1. In the `craftmill` Vercel team, import `craftmilldev/sesh` as a new project named `sesh`, with **Root Directory** set to `packages/web`.
