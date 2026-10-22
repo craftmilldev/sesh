@@ -214,7 +214,7 @@ export function createApp(opts: AppOptions) {
       return c.redirect("/login");
     }
     const invite = await store.findInvite(await opts.getDb(), token);
-    if (!invite.ok) {
+    if ("problem" in invite) {
       await metrics.capture("invite_rejected", user.id, { reason: invite.problem, step: "view" });
       return c.html(inviteProblem(), 410);
     }
@@ -232,7 +232,7 @@ export function createApp(opts: AppOptions) {
     const user = await currentUser(c);
     if (!user) return c.redirect("/login");
     const result = await store.acceptInvite(await opts.getDb(), user.id, c.req.param("token"));
-    if (!result.ok) {
+    if ("problem" in result) {
       await metrics.capture("invite_rejected", user.id, { reason: result.problem, step: "accept" });
       return c.html(inviteProblem(), 410);
     }
@@ -429,7 +429,7 @@ OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${token}"</pre>`;
       return c.html(await shell(c, html``, "That doesn't look like an email address."), 400);
     }
     const made = await store.createInvite(await opts.getDb(), user.id, org.id);
-    if (!made.ok) {
+    if ("problem" in made) {
       await metrics.capture("invite_create_rejected", user.id, { reason: made.problem });
       return made.problem === "not_owner"
         ? c.html(await shell(c, html``, "Only owners can invite people."), 403)
