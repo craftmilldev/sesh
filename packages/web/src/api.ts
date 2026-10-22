@@ -145,7 +145,7 @@ export function createApp(opts: AppOptions) {
       return fail(c, 400, "malformed", "That code doesn't look right.");
     }
     const result = await store.redeemLoginCode(await opts.getDb(), email, code);
-    if (!result.ok) {
+    if ("problem" in result) {
       await metrics.capture("verify_rejected", ANONYMOUS, { reason: result.problem });
       return fail(c, 401, result.problem, "That code is invalid or has expired.");
     }
@@ -178,7 +178,7 @@ export function createApp(opts: AppOptions) {
   api.get("/invites/:token", async (c) => {
     const user = c.var.user;
     const invite = await store.findInvite(await opts.getDb(), c.req.param("token"));
-    if (!invite.ok) {
+    if ("problem" in invite) {
       await metrics.capture("invite_rejected", user.id, { reason: invite.problem, step: "view" });
       return fail(c, 410, invite.problem, "This invite was already used, has expired, or never existed.");
     }
@@ -189,7 +189,7 @@ export function createApp(opts: AppOptions) {
   api.post("/invites/:token", async (c) => {
     const user = c.var.user;
     const result = await store.acceptInvite(await opts.getDb(), user.id, c.req.param("token"));
-    if (!result.ok) {
+    if ("problem" in result) {
       await metrics.capture("invite_rejected", user.id, { reason: result.problem, step: "accept" });
       return fail(c, 410, result.problem, "This invite was already used, has expired, or never existed.");
     }
@@ -262,7 +262,7 @@ export function createApp(opts: AppOptions) {
       return fail(c, 400, "invalid_email", "That doesn't look like an email address.");
     }
     const made = await store.createInvite(await opts.getDb(), user.id, org.id);
-    if (!made.ok) {
+    if ("problem" in made) {
       await metrics.capture("invite_create_rejected", user.id, { reason: made.problem });
       return made.problem === "not_owner"
         ? fail(c, 403, made.problem, "Only owners can invite people.")
