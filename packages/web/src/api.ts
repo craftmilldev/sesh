@@ -1,5 +1,4 @@
 import { Hono, type Context } from "hono";
-import { html } from "hono/html";
 import type { Db } from "./db/index.js";
 import { consoleSender, type SendEmail } from "./email.js";
 import { LOGIN_CODE_RE, normalizeLoginCode } from "./ids.js";
@@ -76,31 +75,6 @@ async function readCapped(stream: ReadableStream<Uint8Array> | null, max: number
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-const landing = () =>
-  html`<!doctype html>
-    <html lang="en">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>sesh</title>
-        <style>
-          body {
-            font:
-              18px/1.5 system-ui,
-              sans-serif;
-            max-width: 36rem;
-            margin: 6rem auto;
-            padding: 0 1rem;
-          }
-        </style>
-      </head>
-      <body>
-        <h1>sesh</h1>
-        <p>Session insights for Claude Code teams. It shows the shape of the work, never who did it.</p>
-        <p><a href="/login">Sign in</a></p>
-      </body>
-    </html>`;
-
 type ApiEnv = { Variables: { user: store.User } };
 type OrgEnv = { Variables: { user: store.User; org: store.Membership; orgs: store.Membership[] } };
 
@@ -111,11 +85,6 @@ export function createApp(opts: AppOptions) {
 
   // Nothing is checked yet (there is no database); a failing check will return 503 and record health_check_failed.
   app.get("/health", (c) => c.json({ ok: true }));
-
-  app.get("/", async (c) => {
-    await metrics.capture("landing_viewed", ANONYMOUS);
-    return c.html(landing());
-  });
 
   // The signed-in app is a SPA: these paths, and its bundle, are served by ui.ts and everything else is the JSON API.
   app.route("/", createWeb({ metrics }));

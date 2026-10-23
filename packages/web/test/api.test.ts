@@ -30,12 +30,12 @@ describe("basics", () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it("serves the landing page and records the view", async () => {
+  it("serves the landing page as the SPA shell and records the view", async () => {
     const { app, events } = setup();
     const res = await app.request("/");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain("<h1>sesh</h1>");
+    expect(await res.text()).toContain('<div id="root"></div>');
     expect(events.map((e) => e.event)).toEqual(["landing_viewed"]);
   });
 

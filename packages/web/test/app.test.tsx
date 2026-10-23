@@ -3,7 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../client/home.js";
-import { Page } from "../client/layout.js";
+import { Landing } from "../client/landing.js";
+import { Chrome, Page } from "../client/layout.js";
 import { Settings } from "../client/settings.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -96,7 +97,40 @@ describe("signed-in pages", () => {
     expect(tabs.map((a) => a.getAttribute("aria-current"))).toEqual(["page", null]);
     expect(container.querySelector(".who")!.textContent).toBe("alpha · Ada");
     expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector(".nav-button")!.textContent).toBe("Sign out");
     expect(container.querySelector(".footer")!.textContent).toBe("Sesh · Craftmill · Plumbline LLC, Maine");
+  });
+
+  it("signs out from the header on every signed-in page, and only there", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    const replace = vi.fn();
+    vi.stubGlobal("location", { replace });
+    await act(async () => root.render(settingsPage()));
+    const buttons = [...container.querySelectorAll("button")].filter((b) => b.textContent === "Sign out");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]!.closest(".nav")).not.toBeNull();
+    await act(async () => buttons[0]!.click());
+    expect(localStorage.getItem("sesh_session")).toBeNull();
+    expect(replace).toHaveBeenCalledWith("/");
+  });
+
+  it("draws the same chrome signed out, with Sign in in the nav and no tabs", async () => {
+    localStorage.clear();
+    await act(async () => root.render(<Chrome current="login">hello</Chrome>));
+    expect(container.querySelector(".wordmark")!.getAttribute("href")).toBe("/");
+    const tabs = [...container.querySelectorAll(".tab")];
+    expect(tabs.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([["Sign in", "/login"]]);
+    expect(container.querySelector(".nav-button")).toBeNull();
+    expect(container.querySelector("main")!.textContent).toBe("hello");
+    expect(container.querySelector(".footer")).not.toBeNull();
+  });
+
+  it("draws the landing page in the same chrome, pointing at login when signed out", async () => {
+    localStorage.clear();
+    await act(async () => root.render(<Landing />));
+    expect(container.querySelector(".wordmark")).not.toBeNull();
+    expect(container.querySelector("h1")!.textContent).toBe("Session insights for Claude Code teams");
+    expect(container.querySelector("a.button")!.getAttribute("href")).toBe("/login");
   });
 
   it("shows the team's day: figures, the pool and the heaviest sessions, with no names", async () => {
