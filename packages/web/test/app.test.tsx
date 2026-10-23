@@ -111,6 +111,7 @@ describe("signed-in pages", () => {
     expect(text()).not.toContain("left");
     expect(text()).toContain("of the team pool · 2 of 4 members reporting");
     expect(text()).toContain("90%");
+    expect(container.querySelectorAll(".figure .num.hot")).toHaveLength(1); // 90% used is a warning, 19% is not
     expect(text()).toContain("Top 1 of 3");
     expect(container.querySelector("tbody a")!.getAttribute("href")).toBe("/app/sessions/s1");
     expect(container.querySelector("td.hot")).not.toBeNull(); // 30M of 51.7M is over 40% of the day
