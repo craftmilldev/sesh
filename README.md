@@ -48,23 +48,26 @@ instead: a `plan.usage.utilization` gauge (0 to 1) with one point per window (`p
 become one `sesh.limit_snapshots` row (percent = utilization x 100); other windows are ignored. JSON metrics only.
 
 It posts where Claude Code's OTel export already goes: `OTEL_EXPORTER_OTLP_ENDPOINT` plus `/v1/limits`, with the
-ingest token from the `Authorization=Bearer <token>` in `OTEL_EXPORTER_OTLP_HEADERS`. `SESH_URL` and `SESH_TOKEN`
-override that; with neither it only prints the bar. Once the OTel env vars from `/app/settings` are set up, install it
-with:
+ingest token from the `Authorization=Bearer <token>` in `OTEL_EXPORTER_OTLP_HEADERS`. Claude Code passes no `OTEL_*`
+variables to the status line (not even ones set in settings.json `env`), so the installer works these out and saves
+them as `{ "url", "token" }` in `config.json` next to the script, which the script reads. `SESH_URL` and `SESH_TOKEN`
+override that, and the `OTEL_*` variables are used if they ever do arrive; with none it only prints the bar. Once the
+OTel env vars from `/app/settings` are set up, install it with:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/craftmilldev/sesh/main/install.sh | sh
 ```
 
-[`install.sh`](install.sh) downloads the script to `~/.sesh/sesh-statusline.mjs`, sets `statusLine` in
-`~/.claude/settings.json` (keeping the old file as `settings.json.bak`) and says whether it found the OTel settings. It
-adds no token of its own, won't replace a status line that isn't sesh's unless you say yes (or set `SESH_REPLACE=1`),
-and needs Node 22+. To do it by hand, copy the script somewhere stable as a `.mjs` file and add to
-`~/.claude/settings.json`:
+[`install.sh`](install.sh) downloads the script to `~/.sesh/sesh-statusline.mjs`, saves the OTel endpoint and token
+to `~/.sesh/config.json` (mode 600; run it again after changing them), sets `statusLine` in `~/.claude/settings.json`
+with a 60 second `refreshInterval` (keeping the old file as `settings.json.bak`) and says whether it found the OTel
+settings. It adds no token of its own, won't replace a status line that isn't sesh's unless you say yes (or set `SESH_REPLACE=1`),
+and needs Node 22+. To do it by hand, copy the script somewhere stable as a `.mjs` file, put the `config.json` beside it
+(`{ "url": "https://<sesh>/v1/limits", "token": "<ingest token>" }`) and add to `~/.claude/settings.json`:
 
 ```json
 {
-  "statusLine": { "type": "command", "command": "node /abs/path/to/sesh-statusline.mjs" }
+  "statusLine": { "type": "command", "command": "node /abs/path/to/sesh-statusline.mjs", "refreshInterval": 60 }
 }
 ```
 

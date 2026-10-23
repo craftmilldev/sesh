@@ -5,7 +5,8 @@
 #
 # It downloads sesh-statusline.js to ~/.sesh/ and sets statusLine in ~/.claude/settings.json. The status line
 # reports to the sesh your OTel export already goes to (the OTEL_* env vars from sesh's settings page), so set
-# those up first; it adds no token of its own.
+# those up first; it adds no token of its own. Claude Code passes no OTEL_* variables to the status line, so the
+# endpoint and token are saved to ~/.sesh/config.json (mode 600) for it to read. Run this again after changing them.
 #
 # An existing statusLine that isn't sesh's is only replaced if you say so (or SESH_REPLACE=1). The old
 # settings.json is kept as settings.json.bak. Needs Node 22+, which runs the status line itself.
@@ -60,17 +61,24 @@ say "Installed $SCRIPT"
 # The command Claude Code runs. Node's absolute path, since the status line may not get the shell's PATH.
 COMMAND="\"$NODE\" \"$SCRIPT\""
 
-# Read the settings before changing anything: the current status line, and where it would report. Claude Code
-# gives the status line its own environment plus the settings' env, so look at both.
+# Read the settings before changing anything: the current status line, and where it would report. The OTel export
+# is set in this shell or the settings' env; save it to config.json, or keep the one there if neither has it.
 mkdir -p "$(dirname "$SETTINGS")"
-state="$(SETTINGS="$SETTINGS" SCRIPT="$SCRIPT" "$NODE" --input-type=module -e '
-  import { readFileSync } from "node:fs";
+state="$(SETTINGS="$SETTINGS" SCRIPT="$SCRIPT" CONFIG="$DIR/config.json" "$NODE" --input-type=module -e '
+  import { readFileSync, renameSync, writeFileSync } from "node:fs";
   import { pathToFileURL } from "node:url";
   let s = {};
   try { s = JSON.parse(readFileSync(process.env.SETTINGS, "utf8")); }
   catch (e) { if (e.code !== "ENOENT") { console.error("cannot read " + process.env.SETTINGS + ": " + e.message); process.exit(1); } }
-  const { target } = await import(pathToFileURL(process.env.SCRIPT).href);
-  const to = target({ ...process.env, ...(s && s.env) });
+  const { target, readConfig } = await import(pathToFileURL(process.env.SCRIPT).href);
+  let to = target({ ...process.env, ...(s && s.env) }, null);
+  if (to) {
+    const tmp = process.env.CONFIG + ".sesh-tmp";
+    writeFileSync(tmp, JSON.stringify(to, null, 2) + "\n", { mode: 0o600 });
+    renameSync(tmp, process.env.CONFIG);
+  } else {
+    to = readConfig(process.env.CONFIG);
+  }
   const c = s && s.statusLine && s.statusLine.command;
   console.log(to ? new URL(to.url).origin : "");
   process.stdout.write(typeof c === "string" ? c : "");
@@ -98,7 +106,8 @@ SETTINGS="$SETTINGS" COMMAND="$COMMAND" "$NODE" -e '
   let s = {};
   try { s = JSON.parse(fs.readFileSync(SETTINGS, "utf8")); } catch {}
   if (!s || typeof s !== "object" || Array.isArray(s)) s = {};
-  s.statusLine = { type: "command", command: COMMAND };
+  // Rerun once a minute too, so the bar (and the report) keeps up between messages.
+  s.statusLine = { type: "command", command: COMMAND, refreshInterval: 60 };
   const tmp = SETTINGS + ".sesh-tmp";
   let mode = 0o600;
   try { mode = fs.statSync(SETTINGS).mode & 0o777; } catch {}
@@ -111,5 +120,5 @@ if [ -n "$origin" ]; then
 else
   say "No OTel export to sesh found (OTEL_EXPORTER_OTLP_ENDPOINT and an Authorization=Bearer header in"
   say "OTEL_EXPORTER_OTLP_HEADERS), so the status line will show plan usage but not report it."
-  say "Set those up from sesh's settings page; the status line picks them up without reinstalling."
+  say "Set those up from sesh's settings page, then run this again."
 fi
