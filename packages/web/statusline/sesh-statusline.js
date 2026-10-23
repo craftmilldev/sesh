@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Claude Code status line for sesh: prints "5h N% | 7d N%" and reports the plan usage to sesh.
-// Plain Node, no dependencies. It posts to the sesh that Claude Code's OTel export already goes to
-// (OTEL_EXPORTER_OTLP_ENDPOINT, with the bearer token in OTEL_EXPORTER_OTLP_HEADERS); SESH_URL and SESH_TOKEN
-// override that. With neither it only prints the bar. It never fails or waits on the network: the post happens in
-// a detached child.
+// Plain Node, no dependencies. It posts to the sesh in config.json next to this file (`{ "url", "token" }`, which
+// install.sh writes from the OTel export settings, since Claude Code passes no OTEL_* variables to the status
+// line). SESH_URL and SESH_TOKEN override that; the OTel variables are the last resort. With none it only prints the
+// bar. It never fails or waits on the network: the post happens in a detached child.
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -64,9 +64,10 @@ function otlpBearer(headers) {
   return null;
 }
 
-/** Where to post and with what token: SESH_URL/SESH_TOKEN, else the OTel export's endpoint and token. Null for neither. */
-export function target(env = process.env) {
+/** Where to post and with what token: SESH_URL/SESH_TOKEN, else config.json, else the OTel export's. Null for none. */
+export function target(env = process.env, config = readConfig()) {
   if (env.SESH_URL && env.SESH_TOKEN) return { url: new URL("/v1/limits", env.SESH_URL).href, token: env.SESH_TOKEN };
+  if (config) return config;
   const endpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT;
   const token = otlpBearer(env.OTEL_EXPORTER_OTLP_HEADERS);
   if (!endpoint || !token) return null;
@@ -76,6 +77,17 @@ export function target(env = process.env) {
   } catch {
     return null;
   }
+}
+
+/** The `{ url, token }` install.sh saved next to this file, or null when there is none or it is unreadable. */
+export function readConfig(file = new URL("./config.json", import.meta.url)) {
+  try {
+    const { url, token } = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof url === "string" && typeof token === "string" && token) return { url: new URL(url).href, token };
+  } catch {
+    // no config
+  }
+  return null;
 }
 
 async function postSnapshot(snapshot) {

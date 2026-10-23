@@ -1,11 +1,13 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../src/db/index.js";
 import { openTestDb } from "../src/db/testing.js";
 import { parsePending } from "../src/parse.js";
 import { planPool, poolUsed, storeLimitSnapshot, storeRawPayload } from "../src/store.js";
 import { uuidv7 } from "../src/ids.js";
-import { formatBar, parseInput, reportable, target } from "../statusline/sesh-statusline.js";
+import { formatBar, parseInput, readConfig, reportable, target } from "../statusline/sesh-statusline.js";
 import { type Session, setupApp } from "./harness.js";
 
 const input = readFileSync(new URL("./fixtures/statusline-input.json", import.meta.url), "utf8");
@@ -54,24 +56,41 @@ describe("status line script", () => {
     expect(reportable(null)).toBe(false);
   });
 
-  it("posts where the OTel export goes, unless SESH_URL and SESH_TOKEN say otherwise", () => {
+  it("posts where config.json says, unless SESH_URL and SESH_TOKEN say otherwise, then where the OTel export goes", () => {
+    const config = { url: "https://saved.test/v1/limits", token: "tok_saved" };
     const otel = {
       OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test/",
       OTEL_EXPORTER_OTLP_HEADERS: "x-other=1,Authorization=Bearer tok_otel",
     };
-    expect(target(otel)).toEqual({ url: "https://sesh.test/v1/limits", token: "tok_otel" });
+    expect(target(otel, config)).toEqual(config);
+    expect(target(otel, null)).toEqual({ url: "https://sesh.test/v1/limits", token: "tok_otel" });
     expect(
-      target({
-        OTEL_EXPORTER_OTLP_ENDPOINT: "https://c.test/otel",
-        OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20t",
-      }),
+      target(
+        {
+          OTEL_EXPORTER_OTLP_ENDPOINT: "https://c.test/otel",
+          OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20t",
+        },
+        null,
+      ),
     ).toEqual({ url: "https://c.test/otel/v1/limits", token: "t" });
-    expect(target({ ...otel, SESH_URL: "https://other.test", SESH_TOKEN: "tok_sesh" })).toEqual({
+    expect(target({ ...otel, SESH_URL: "https://other.test", SESH_TOKEN: "tok_sesh" }, config)).toEqual({
       url: "https://other.test/v1/limits",
       token: "tok_sesh",
     });
-    expect(target({ OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test" })).toBeNull();
-    expect(target({})).toBeNull();
+    expect(target({ OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test" }, null)).toBeNull();
+    expect(target({}, null)).toBeNull();
+  });
+
+  it("reads config.json, and treats a missing or broken one as none", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sesh-config-"));
+    const file = join(dir, "config.json");
+    expect(readConfig(file)).toBeNull();
+    writeFileSync(file, JSON.stringify({ url: "https://saved.test/v1/limits", token: "tok_saved" }));
+    expect(readConfig(file)).toEqual({ url: "https://saved.test/v1/limits", token: "tok_saved" });
+    writeFileSync(file, JSON.stringify({ url: "not a url", token: "tok_saved" }));
+    expect(readConfig(file)).toBeNull();
+    writeFileSync(file, "{");
+    expect(readConfig(file)).toBeNull();
   });
 });
 
