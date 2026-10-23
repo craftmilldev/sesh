@@ -435,6 +435,19 @@ button {
 button:hover:not(:disabled) {
   background: var(--ink-800);
 }
+a.button {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-lg);
+  padding: 0 24px;
+  background: var(--ink-900);
+  color: var(--paper-100);
+  font-size: 13px;
+}
+a.button:hover {
+  background: var(--ink-800);
+  color: var(--paper-100);
+}
 button.primary {
   height: var(--control-lg);
   padding: 0 24px;

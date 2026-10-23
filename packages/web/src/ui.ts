@@ -60,6 +60,10 @@ export function createWeb(opts: WebOptions = {}) {
   const app = new Hono();
   const metrics = opts.metrics ?? noopMetrics;
 
+  app.get("/", async (c) => {
+    await metrics.capture("landing_viewed", ANONYMOUS);
+    return c.html(SHELL, 200, SECURITY_HEADERS);
+  });
   app.get("/login", async (c) => {
     await metrics.capture("login_page_viewed", ANONYMOUS);
     return c.html(SHELL, 200, SECURITY_HEADERS);

@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../client/home.js";
+import { Landing } from "../client/landing.js";
 import { Chrome, Page } from "../client/layout.js";
 import { Settings } from "../client/settings.js";
 
@@ -122,6 +123,14 @@ describe("signed-in pages", () => {
     expect(container.querySelector(".nav-button")).toBeNull();
     expect(container.querySelector("main")!.textContent).toBe("hello");
     expect(container.querySelector(".footer")).not.toBeNull();
+  });
+
+  it("draws the landing page in the same chrome, pointing at login when signed out", async () => {
+    localStorage.clear();
+    await act(async () => root.render(<Landing />));
+    expect(container.querySelector(".wordmark")).not.toBeNull();
+    expect(container.querySelector("h1")!.textContent).toBe("Session insights for Claude Code teams");
+    expect(container.querySelector("a.button")!.getAttribute("href")).toBe("/login");
   });
 
   it("shows the team's day: figures, the pool and the heaviest sessions, with no names", async () => {
