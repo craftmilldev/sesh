@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../src/db/index.js";
 import { openTestDb } from "../src/db/testing.js";
 import { parsePending } from "../src/parse.js";
-import { planPool, poolLeft, storeLimitSnapshot, storeRawPayload } from "../src/store.js";
+import { planPool, poolUsed, storeLimitSnapshot, storeRawPayload } from "../src/store.js";
 import { uuidv7 } from "../src/ids.js";
 import { formatBar, parseInput, reportable } from "../statusline/sesh-statusline.js";
 import { type Session, setupApp } from "./harness.js";
@@ -161,8 +161,8 @@ describe("POST /v1/limits", () => {
     const pool = (await (await t.call("/limits", { session: t.session })).json()) as Record<string, unknown>;
     expect(pool).toEqual({
       members: 1,
-      five_hour_left: 100,
-      seven_day_left: 96,
+      five_hour_used: 0,
+      seven_day_used: 4,
       five_hour_reporting: 1,
       seven_day_reporting: 1,
     });
@@ -173,9 +173,9 @@ describe("POST /v1/limits", () => {
     await t.post(snapshot({ five_hour_resets_at: Math.floor(Date.now() / 1000) - 60 }));
     const pool = (await (await t.call("/limits", { session: t.session })).json()) as Record<string, unknown>;
     expect(pool).toMatchObject({
-      five_hour_left: 100,
+      five_hour_used: 0,
       five_hour_reporting: 0,
-      seven_day_left: 92,
+      seven_day_used: 8,
       seven_day_reporting: 1,
     });
   });
@@ -185,18 +185,18 @@ describe("POST /v1/limits", () => {
     const b = await setup("lim8@example.com");
     await a.post(snapshot());
     const res = (await (await b.call("/limits", { session: b.session })).json()) as Record<string, unknown>;
-    expect(res).toMatchObject({ five_hour_reporting: 0, seven_day_reporting: 0, five_hour_left: 100 });
+    expect(res).toMatchObject({ five_hour_reporting: 0, seven_day_reporting: 0, five_hour_used: 0 });
   });
 });
 
 describe("the team plan pool", () => {
-  it("is 100 minus the members' average used share, rounded", () => {
-    expect(poolLeft([25, 50], 4)).toBe(81); // 4 members, two with no reading
-    expect(poolLeft([], 3)).toBe(100); // nobody reported
-    expect(poolLeft([100, 100], 2)).toBe(0);
-    expect(poolLeft([33], 3)).toBe(89); // 100 - 11
-    expect(poolLeft([150, -5], 2)).toBe(50); // readings are clamped to 0-100
-    expect(poolLeft([40], 0)).toBe(100);
+  it("is the members' average used share, rounded", () => {
+    expect(poolUsed([25, 50], 4)).toBe(19); // 4 members, two with no reading
+    expect(poolUsed([], 3)).toBe(0); // nobody reported
+    expect(poolUsed([100, 100], 2)).toBe(100);
+    expect(poolUsed([33], 3)).toBe(11);
+    expect(poolUsed([150, -5], 2)).toBe(50); // readings are clamped to 0-100
+    expect(poolUsed([40], 0)).toBe(0);
   });
 
   it("counts every member, those with no reading and those whose window has reset as unused", async () => {
@@ -235,8 +235,8 @@ describe("the team plan pool", () => {
 
     expect(await planPool(db, orgId)).toEqual({
       members: 4,
-      five_hour_left: 81, // 100 - (25 + 50) / 4
-      seven_day_left: 79, // 100 - (12.5 + 25 + 45) / 4, rounded
+      five_hour_used: 19, // (25 + 50) / 4, rounded
+      seven_day_used: 21, // (12.5 + 25 + 45) / 4, rounded
       five_hour_reporting: 2,
       seven_day_reporting: 3,
     });
@@ -284,7 +284,7 @@ describe("plan usage over OTLP metrics", () => {
       { five_hour_pct: 25, seven_day_pct: 50, session_external_id: "otlp-sess" },
     ]);
     const pool = (await (await t.call("/limits", { session: t.session })).json()) as Record<string, unknown>;
-    expect(pool).toMatchObject({ five_hour_left: 75, seven_day_left: 50 });
+    expect(pool).toMatchObject({ five_hour_used: 25, seven_day_used: 50 });
   });
 
   it("ignores other metrics, out-of-range values and points without a session", async () => {

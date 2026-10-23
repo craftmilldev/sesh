@@ -313,8 +313,8 @@ export async function listMembers(db: Db, orgId: string): Promise<{ name: string
 
 export interface PlanPool {
   members: number;
-  five_hour_left: number;
-  seven_day_left: number;
+  five_hour_used: number;
+  seven_day_used: number;
   five_hour_reporting: number;
   seven_day_reporting: number;
 }
@@ -323,10 +323,10 @@ export interface PlanPool {
  * The team's plan window as one pool: every member is an equal 1/N share of 100%, a member's share used is their
  * current reading, and a member with none (never reported, or the window has reset) counts as 0% used.
  */
-export function poolLeft(used: number[], members: number): number {
-  if (members <= 0) return 100;
+export function poolUsed(used: number[], members: number): number {
+  if (members <= 0) return 0;
   const sum = used.reduce((a, u) => a + Math.min(100, Math.max(0, u)), 0);
-  return Math.round(100 - sum / members);
+  return Math.round(sum / members);
 }
 
 export async function planPool(db: Db, orgId: string): Promise<PlanPool> {
@@ -337,8 +337,8 @@ export async function planPool(db: Db, orgId: string): Promise<PlanPool> {
   const seven = limits.map((l) => l.seven_day_pct).filter((v) => v != null);
   return {
     members,
-    five_hour_left: poolLeft(five, members),
-    seven_day_left: poolLeft(seven, members),
+    five_hour_used: poolUsed(five, members),
+    seven_day_used: poolUsed(seven, members),
     five_hour_reporting: five.length,
     seven_day_reporting: seven.length,
   };

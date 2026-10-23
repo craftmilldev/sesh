@@ -48,8 +48,8 @@ function fakeApi(opts: { sessions?: number } = {}) {
           : path === "/limits"
             ? {
                 members: 4,
-                five_hour_left: 81,
-                seven_day_left: 90,
+                five_hour_used: 19,
+                seven_day_used: 90,
                 five_hour_reporting: 2,
                 seven_day_reporting: 3,
               }
@@ -106,9 +106,12 @@ describe("signed-in pages", () => {
     expect(text()).toContain("51.7M");
     expect(text()).toContain("50.5M read from cache");
     expect(text()).toContain("97.7%");
-    expect(text()).toContain("81%");
+    expect(text()).toContain("19%");
+    expect(text()).toContain("5 hr used");
+    expect(text()).not.toContain("left");
     expect(text()).toContain("of the team pool · 2 of 4 members reporting");
     expect(text()).toContain("90%");
+    expect(container.querySelectorAll(".figure .num.hot")).toHaveLength(1); // 90% used is a warning, 19% is not
     expect(text()).toContain("Top 1 of 3");
     expect(container.querySelector("tbody a")!.getAttribute("href")).toBe("/app/sessions/s1");
     expect(container.querySelector("td.hot")).not.toBeNull(); // 30M of 51.7M is over 40% of the day
