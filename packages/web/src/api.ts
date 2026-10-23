@@ -265,7 +265,7 @@ export function createApp(opts: AppOptions) {
     });
   });
 
-  // The team's plan windows as one pool (see store.poolLeft). Names no one.
+  // The team's plan windows as one pool (see store.poolUsed). Names no one.
   scoped.get("/limits", async (c) => {
     const { user, org } = c.var;
     const pool = await store.planPool(await opts.getDb(), org.id);

@@ -21,20 +21,22 @@ interface Today {
 }
 interface Pool {
   members: number;
-  five_hour_left: number;
-  seven_day_left: number;
+  five_hour_used: number;
+  seven_day_used: number;
   five_hour_reporting: number;
   seven_day_reporting: number;
 }
 
 /** A session above this share of the day is the page's one highlight. */
 const HOT_SHARE = 0.4;
+/** Plan usage (percent) from which the pool figure is shown as a warning. */
+const POOL_HOT = 80;
 
-function Figure({ label, value, note }: { label: string; value: string; note: string }) {
+function Figure({ label, value, note, hot }: { label: string; value: string; note: string; hot?: boolean }) {
   return (
     <div className="figure">
       <div className="label">{label}</div>
-      <div className="num">{value}</div>
+      <div className={hot ? "num hot" : "num"}>{value}</div>
       <p className="note">{note}</p>
     </div>
   );
@@ -99,21 +101,23 @@ export function Home({ orgName }: { orgName: string }) {
             <section className="section pool">
               <div>
                 <p className="eyebrow">Team plan usage</p>
-                <h2>Room the team has left</h2>
+                <h2>How much of the plan the team has used</h2>
                 <p className="muted">
                   Every member&apos;s plan window goes into one pool, each an equal share. A member who hasn&apos;t
-                  reported counts as unused.
+                  reported counts as 0% used. Higher is closer to the limit.
                 </p>
               </div>
               <div className="figures big">
                 <Figure
-                  label="5 hr left"
-                  value={`${pool.five_hour_left}%`}
+                  label="5 hr used"
+                  value={`${pool.five_hour_used}%`}
+                  hot={pool.five_hour_used >= POOL_HOT}
                   note={`of the team pool · ${pool.five_hour_reporting} of ${pool.members} members reporting`}
                 />
                 <Figure
-                  label="7 day left"
-                  value={`${pool.seven_day_left}%`}
+                  label="7 day used"
+                  value={`${pool.seven_day_used}%`}
+                  hot={pool.seven_day_used >= POOL_HOT}
                   note={`of the team pool · ${pool.seven_day_reporting} of ${pool.members} members reporting`}
                 />
               </div>
