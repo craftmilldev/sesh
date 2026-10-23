@@ -218,6 +218,11 @@ th,
 .tab {
   color: var(--ink-500);
 }
+/* Every item in the nav is the same size, signed in or not. */
+.nav .tab {
+  font-size: inherit;
+  letter-spacing: inherit;
+}
 .tab:hover {
   color: var(--madder);
 }
@@ -231,9 +236,11 @@ th,
 }
 /* Sign out is a button but reads as a tab. */
 .nav-button {
+  height: auto;
   padding: 0;
   border: 0;
   background: none;
+  color: var(--ink-500);
   font: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
