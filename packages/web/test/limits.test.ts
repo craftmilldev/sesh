@@ -5,7 +5,7 @@ import { openTestDb } from "../src/db/testing.js";
 import { parsePending } from "../src/parse.js";
 import { planPool, poolUsed, storeLimitSnapshot, storeRawPayload } from "../src/store.js";
 import { uuidv7 } from "../src/ids.js";
-import { formatBar, parseInput, reportable } from "../statusline/sesh-statusline.js";
+import { formatBar, parseInput, reportable, target } from "../statusline/sesh-statusline.js";
 import { type Session, setupApp } from "./harness.js";
 
 const input = readFileSync(new URL("./fixtures/statusline-input.json", import.meta.url), "utf8");
@@ -52,6 +52,26 @@ describe("status line script", () => {
     expect(parseInput("not json")).toBeNull();
     expect(formatBar(null)).toBe("5h n/a | 7d n/a");
     expect(reportable(null)).toBe(false);
+  });
+
+  it("posts where the OTel export goes, unless SESH_URL and SESH_TOKEN say otherwise", () => {
+    const otel = {
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test/",
+      OTEL_EXPORTER_OTLP_HEADERS: "x-other=1,Authorization=Bearer tok_otel",
+    };
+    expect(target(otel)).toEqual({ url: "https://sesh.test/v1/limits", token: "tok_otel" });
+    expect(
+      target({
+        OTEL_EXPORTER_OTLP_ENDPOINT: "https://c.test/otel",
+        OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20t",
+      }),
+    ).toEqual({ url: "https://c.test/otel/v1/limits", token: "t" });
+    expect(target({ ...otel, SESH_URL: "https://other.test", SESH_TOKEN: "tok_sesh" })).toEqual({
+      url: "https://other.test/v1/limits",
+      token: "tok_sesh",
+    });
+    expect(target({ OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test" })).toBeNull();
+    expect(target({})).toBeNull();
   });
 });
 

@@ -47,16 +47,28 @@ instead: a `plan.usage.utilization` gauge (0 to 1) with one point per window (`p
 (unix seconds) and `session.id`, sent to `POST /v1/metrics` with the same ingest token. Points sharing a session and time
 become one `sesh.limit_snapshots` row (percent = utilization x 100); other windows are ignored. JSON metrics only.
 
-To install it, copy the script somewhere stable, make an ingest token on `/app/settings`, and add to `~/.claude/settings.json`:
+It posts where Claude Code's OTel export already goes: `OTEL_EXPORTER_OTLP_ENDPOINT` plus `/v1/limits`, with the
+ingest token from the `Authorization=Bearer <token>` in `OTEL_EXPORTER_OTLP_HEADERS`. `SESH_URL` and `SESH_TOKEN`
+override that; with neither it only prints the bar. Once the OTel env vars from `/app/settings` are set up, install it
+with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/craftmilldev/sesh/main/install.sh | sh
+```
+
+[`install.sh`](install.sh) downloads the script to `~/.sesh/sesh-statusline.mjs`, sets `statusLine` in
+`~/.claude/settings.json` (keeping the old file as `settings.json.bak`) and says whether it found the OTel settings. It
+adds no token of its own, won't replace a status line that isn't sesh's unless you say yes (or set `SESH_REPLACE=1`),
+and needs Node 22+. To do it by hand, copy the script somewhere stable as a `.mjs` file and add to
+`~/.claude/settings.json`:
 
 ```json
 {
-  "env": { "SESH_URL": "https://<your sesh origin>", "SESH_TOKEN": "<ingest token>" },
-  "statusLine": { "type": "command", "command": "node /abs/path/to/sesh-statusline.js" }
+  "statusLine": { "type": "command", "command": "node /abs/path/to/sesh-statusline.mjs" }
 }
 ```
 
-Without `SESH_URL` and `SESH_TOKEN` it only prints the bar. `SESH_STATE_DIR` (default `~/.sesh`) holds the throttle file.
+`SESH_STATE_DIR` (default `~/.sesh`) holds the throttle file.
 
 The earlier statusline spike is in [`spike/statusline/`](spike/statusline/).
 

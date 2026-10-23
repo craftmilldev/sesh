@@ -9,3 +9,5 @@ export interface Snapshot {
 export function parseInput(text: string, now?: Date): Snapshot | null;
 export function formatBar(snapshot: Snapshot | null): string;
 export function reportable(snapshot: Snapshot | null): boolean;
+/** Where the status line posts, from SESH_URL/SESH_TOKEN or else the OTel export settings. Null when neither is set. */
+export function target(env?: Record<string, string | undefined>): { url: string; token: string } | null;

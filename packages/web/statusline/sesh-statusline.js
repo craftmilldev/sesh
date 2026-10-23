@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Claude Code status line for sesh: prints "5h N% | 7d N%" and reports the plan usage to sesh.
-// Plain Node, no dependencies. Set SESH_URL (your sesh origin) and SESH_TOKEN (an ingest token); without
-// them it only prints the bar. It never fails or waits on the network: the post happens in a detached child.
+// Plain Node, no dependencies. It posts to the sesh that Claude Code's OTel export already goes to
+// (OTEL_EXPORTER_OTLP_ENDPOINT, with the bearer token in OTEL_EXPORTER_OTLP_HEADERS); SESH_URL and SESH_TOKEN
+// override that. With neither it only prints the bar. It never fails or waits on the network: the post happens in
+// a detached child.
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -45,12 +47,43 @@ export function formatBar(snapshot) {
 /** Whether this snapshot is worth posting: it has a session and at least one percentage. */
 export const reportable = (s) => !!s && !!s.session_id && (s.five_hour_pct != null || s.seven_day_pct != null);
 
+/** The bearer token in an OTLP headers value (`Authorization=Bearer <token>,other=...`, values may be %-encoded). */
+function otlpBearer(headers) {
+  for (const pair of (headers ?? "").split(",")) {
+    const i = pair.indexOf("=");
+    if (i < 0 || pair.slice(0, i).trim().toLowerCase() !== "authorization") continue;
+    let value = pair.slice(i + 1).trim();
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      // not %-encoded
+    }
+    const m = /^Bearer\s+(\S+)$/i.exec(value);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/** Where to post and with what token: SESH_URL/SESH_TOKEN, else the OTel export's endpoint and token. Null for neither. */
+export function target(env = process.env) {
+  if (env.SESH_URL && env.SESH_TOKEN) return { url: new URL("/v1/limits", env.SESH_URL).href, token: env.SESH_TOKEN };
+  const endpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  const token = otlpBearer(env.OTEL_EXPORTER_OTLP_HEADERS);
+  if (!endpoint || !token) return null;
+  try {
+    // Like OTLP's /v1/logs and /v1/metrics: appended to the endpoint, path and all.
+    return { url: new URL(endpoint.replace(/\/+$/, "") + "/v1/limits").href, token };
+  } catch {
+    return null;
+  }
+}
+
 async function postSnapshot(snapshot) {
-  const { SESH_URL, SESH_TOKEN } = process.env;
-  if (!SESH_URL || !SESH_TOKEN) return;
-  await fetch(new URL("/v1/limits", SESH_URL), {
+  const to = target();
+  if (!to) return;
+  await fetch(to.url, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${SESH_TOKEN}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${to.token}` },
     body: JSON.stringify(snapshot),
     signal: AbortSignal.timeout(POST_TIMEOUT_MS),
   });
@@ -96,7 +129,7 @@ async function main() {
     // unreadable input: print the empty bar
   }
   console.log(formatBar(snapshot));
-  if (!reportable(snapshot) || !process.env.SESH_URL || !process.env.SESH_TOKEN || throttled(Date.now())) return;
+  if (!reportable(snapshot) || !target() || throttled(Date.now())) return;
   try {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--post"], {
       detached: true,
