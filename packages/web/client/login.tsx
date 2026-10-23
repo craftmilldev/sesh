@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Chrome } from "./layout.js";
 import { api, ApiError, getToken, saveToken, takeNext } from "./session.js";
 
 export function Login() {
@@ -32,48 +33,52 @@ export function Login() {
     }
   }
 
-  return sent ? (
-    <form className="page signin" onSubmit={(e) => void submit(e)}>
-      <p className="eyebrow">Sesh · Craftmill</p>
-      <h1>Check your email</h1>
-      <p>
-        We sent a login code to {sent.email}. It expires in {sent.ttl_minutes} minutes.
-      </p>
-      {error && <p className="error">{error}</p>}
-      <p>
-        <label>
-          Code
-          <input
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            required
-            autoFocus
-            autoComplete="one-time-code"
-          />
-        </label>
-      </p>
-      <p>
-        <button type="submit" className="primary">
-          Sign in
-        </button>
-      </p>
-    </form>
-  ) : (
-    <form className="page signin" onSubmit={(e) => void submit(e)}>
-      <p className="eyebrow">Sesh · Craftmill</p>
-      <h1>Sign in to sesh</h1>
-      {error && <p className="error">{error}</p>}
-      <p>
-        <label>
-          Email
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
-        </label>
-      </p>
-      <p>
-        <button type="submit" className="primary">
-          Send me a code
-        </button>
-      </p>
-    </form>
+  return (
+    <Chrome current="login">
+      {sent ? (
+        <form className="signin" onSubmit={(e) => void submit(e)}>
+          <p className="eyebrow">Sesh · Craftmill</p>
+          <h1>Check your email</h1>
+          <p>
+            We sent a login code to {sent.email}. It expires in {sent.ttl_minutes} minutes.
+          </p>
+          {error && <p className="error">{error}</p>}
+          <p>
+            <label>
+              Code
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                required
+                autoFocus
+                autoComplete="one-time-code"
+              />
+            </label>
+          </p>
+          <p>
+            <button type="submit" className="primary">
+              Sign in
+            </button>
+          </p>
+        </form>
+      ) : (
+        <form className="signin" onSubmit={(e) => void submit(e)}>
+          <p className="eyebrow">Sesh · Craftmill</p>
+          <h1>Sign in to sesh</h1>
+          {error && <p className="error">{error}</p>}
+          <p>
+            <label>
+              Email
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+            </label>
+          </p>
+          <p>
+            <button type="submit" className="primary">
+              Send me a code
+            </button>
+          </p>
+        </form>
+      )}
+    </Chrome>
   );
 }

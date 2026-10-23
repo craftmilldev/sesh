@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Chrome } from "./layout.js";
 import { api, ApiError, getToken, rememberNext, saveOrg, takeNext } from "./session.js";
 
 // An invite link. Signed out, it sends the visitor to log in and then back here; signed in, it asks to join.
@@ -32,24 +33,28 @@ export function InvitePage({ token }: { token: string }) {
 
   if (error)
     return (
-      <div className="page signin">
-        <h1>This invite doesn't work</h1>
-        <p>{error} Ask an owner for a new one.</p>
+      <Chrome>
+        <div className="signin">
+          <h1>This invite doesn't work</h1>
+          <p>{error} Ask an owner for a new one.</p>
+          <p>
+            <a href="/app">Back to sesh</a>
+          </p>
+        </div>
+      </Chrome>
+    );
+  if (!org) return <Chrome />;
+  return (
+    <Chrome>
+      <div className="signin">
+        <p className="eyebrow">Sesh · Craftmill</p>
+        <h1>Join {org.name}</h1>
         <p>
-          <a href="/app">Back to sesh</a>
+          <button type="button" className="primary" onClick={() => void join()}>
+            Join this org
+          </button>
         </p>
       </div>
-    );
-  if (!org) return null;
-  return (
-    <div className="page signin">
-      <p className="eyebrow">Sesh · Craftmill</p>
-      <h1>Join {org.name}</h1>
-      <p>
-        <button type="button" className="primary" onClick={() => void join()}>
-          Join this org
-        </button>
-      </p>
-    </div>
+    </Chrome>
   );
 }

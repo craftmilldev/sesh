@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { message, type Me, type Org } from "./layout.js";
-import { api, clearSession, saveOrg } from "./session.js";
+import { api, saveOrg } from "./session.js";
 
 interface Token {
   id: string;
@@ -159,21 +159,6 @@ export function Settings({ me, reload }: { me: Me; reload: () => Promise<void> }
       </section>
 
       <Tokens org={org} endpoint={me.ingest_endpoint} />
-
-      <section className="section">
-        <p className="prose">Signed in as {me.user.name}.</p>
-        <button
-          type="button"
-          onClick={() => {
-            // Best effort: it only records the sign-out, and the session ends here either way.
-            void api("/logout", { body: {} }).catch(() => undefined);
-            clearSession();
-            location.replace("/");
-          }}
-        >
-          Sign out
-        </button>
-      </section>
     </>
   );
 }

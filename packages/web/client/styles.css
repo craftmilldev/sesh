@@ -229,6 +229,20 @@ th,
 .who {
   color: var(--ink-400);
 }
+/* Sign out is a button but reads as a tab. */
+.nav-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.nav-button:hover:not(:disabled) {
+  background: none;
+  color: var(--madder);
+}
 @media (max-width: 480px) {
   .masthead-rule {
     display: none;
@@ -580,7 +594,8 @@ code {
 }
 .signin {
   max-width: 460px;
-  margin: 12vh auto 0;
+  margin: 0 auto;
+  padding: 48px 0 16px;
 }
 .signin h1 {
   margin-bottom: 20px;
