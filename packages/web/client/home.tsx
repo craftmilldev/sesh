@@ -67,7 +67,7 @@ export function Home({ orgName }: { orgName: string }) {
   const cacheMillions = (today.cache_read_tokens / 1e6).toFixed(1);
   return (
     <>
-      <section className="section">
+      <section className="section hero">
         <p className="eyebrow">{date.toUpperCase()}</p>
         <h1>
           {num(today.sessions)} {today.sessions === 1 ? "session" : "sessions"} in {orgName} today

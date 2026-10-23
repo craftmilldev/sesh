@@ -24,17 +24,40 @@
 }
 
 :root {
-  --paper: #e4ddc9;
-  --panel: #f2eede;
-  --ink: #16130e;
-  --muted: #4b4534;
-  --faint: #5c5544;
-  --hair: #16130e29;
-  --soft: #16130e52;
-  --indigo: #2c4a53;
-  --madder: #9e2b1c;
-  --serif: "Sorts Mill Goudy", Georgia, serif;
-  --mono: "Courier Prime", "Courier New", monospace;
+  /* craftmill.dev's tokens (site/src/styles.css), by the same names. The short names below are aliases. */
+  --paper-100: #f2eede;
+  --paper-200: #e4ddc9;
+  --paper-300: #d6cdb4;
+  --ink-900: #16130e;
+  --ink-800: #241f17;
+  --ink-700: #3a352b;
+  --ink-600: #4b4534;
+  --ink-500: #5c5544;
+  --ink-400: #6d6656;
+  --ink-300: #8b8471;
+  --ink-200: #a9a28c;
+  --madder-700: #7a1f12;
+  --madder-600: #9e2b1c;
+  --madder-500: #b8412c;
+  --madder-300: #d08a76;
+  --rule-hair: rgba(22, 19, 14, 0.16);
+  --rule-soft: rgba(22, 19, 14, 0.32);
+  --font-text: "Sorts Mill Goudy", Georgia, "Times New Roman", serif;
+  --font-type: "Courier Prime", Courier, ui-monospace, monospace;
+  --control-sm: 28px;
+  --control-lg: 44px;
+  --measure-page: 1100px;
+
+  --paper: var(--paper-200);
+  --panel: var(--paper-100);
+  --ink: var(--ink-900);
+  --muted: var(--ink-600);
+  --faint: var(--ink-500);
+  --hair: var(--rule-hair);
+  --soft: var(--rule-soft);
+  --madder: var(--madder-600);
+  --serif: var(--font-text);
+  --mono: var(--font-type);
 }
 
 * {
@@ -49,11 +72,17 @@ html {
 body {
   margin: 0;
   background: var(--paper);
-  color: var(--ink);
+  color: var(--ink-700);
   font: 400 17px/1.5 var(--serif);
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+::selection {
+  background: var(--ink-900);
+  color: var(--paper-100);
 }
 .page {
-  max-width: 1100px;
+  max-width: var(--measure-page);
   margin: 0 auto;
   padding: 0 24px;
 }
@@ -63,19 +92,21 @@ h2,
 h3 {
   font-family: var(--serif);
   font-weight: 400;
+  letter-spacing: -0.021em;
+  line-height: 1.16;
+  color: var(--ink-900);
   margin: 0;
 }
 h1 {
-  font-size: 52px;
-  line-height: 1.05;
-  letter-spacing: -0.021em;
+  font-size: clamp(1.75rem, 4vw, 2.75rem);
+  line-height: 1.02;
 }
 h2 {
-  font-size: 26px;
-  line-height: 1.2;
+  font-size: 2.125rem;
+  line-height: 1.1;
 }
 h3 {
-  font-size: 20px;
+  font-size: 1.375rem;
 }
 strong,
 b {
@@ -89,13 +120,11 @@ p {
   color: var(--muted);
 }
 a {
-  color: var(--ink);
-  text-decoration-color: var(--soft);
-  text-underline-offset: 3px;
+  color: var(--madder-600);
+  text-decoration: none;
 }
 a:hover {
-  color: var(--madder);
-  text-decoration-color: var(--madder);
+  color: #7a2013;
 }
 a:focus-visible,
 button:focus-visible,
@@ -116,68 +145,110 @@ th,
 .back {
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.13em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 .eyebrow {
-  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--madder-600);
   margin: 0 0 10px;
 }
+/* A section's eyebrow is a ruled label, as on the site; the page's first section (the hero) keeps the madder one. */
+.section:not(.hero) > .eyebrow {
+  color: var(--ink-500);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--ink-900);
+  margin-bottom: 20px;
+}
+.hero h1 {
+  margin-top: 12px;
+}
 
-/* Masthead and footer, identical on every signed-in page. */
+/* Masthead, nav and footer, identical on every signed-in page: the site's, with Sesh as the wordmark. */
 .masthead {
+  padding: 24px 0 16px;
+  text-align: center;
+}
+.masthead-row {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 16px 24px;
-  padding: 28px 0 20px;
-  border-bottom: 3px double var(--ink);
+  align-items: center;
+  gap: 24px;
+}
+.masthead-rule {
+  flex: 1;
+  min-width: 0;
+  height: 0;
+  border-top: 3px double var(--ink-900);
 }
 .wordmark {
-  display: block;
-  font-size: 44px;
+  font-size: clamp(1.375rem, 8.5vw, 3.75rem);
   line-height: 1;
-  letter-spacing: 0.06em;
-  text-decoration: none;
+  letter-spacing: 0.15em;
+  text-indent: 0.15em;
+  white-space: nowrap;
+  color: var(--ink-900);
+}
+.wordmark:hover {
+  color: var(--ink-900);
 }
 .strapline {
-  margin: 6px 0 0;
-  font: 11px/1.4 var(--mono);
-  letter-spacing: 0.13em;
+  margin: 0;
+  padding-top: 8px;
+  font: 12px/1.5 var(--mono);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-400);
 }
 .nav {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: 12px 20px;
+  padding: 0 0 16px;
+  border-bottom: 3px double var(--ink-900);
+  font: 12px/1.5 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-400);
+}
+.nav-spacer {
+  flex: 1;
 }
 .tab {
-  padding: 8px 12px;
-  color: var(--ink);
-  text-decoration: none;
+  color: var(--ink-500);
 }
 .tab:hover {
   color: var(--madder);
 }
 .tab[aria-current="page"] {
-  background: var(--ink);
-  color: var(--panel);
+  color: var(--ink-900);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .who {
-  font: 13px/1.4 var(--mono);
-  color: var(--muted);
+  color: var(--ink-400);
+}
+@media (max-width: 480px) {
+  .masthead-rule {
+    display: none;
+  }
+  .strapline {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+  }
 }
 .footer {
   margin-top: 32px;
-  padding: 16px 0 40px;
-  border-top: 1px solid var(--ink);
-  font: 11px/1.4 var(--mono);
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-  color: var(--muted);
+  background: var(--paper-300);
+  border-top: 1px solid var(--ink-900);
+  font: 14px/1.5 var(--mono);
+  color: var(--ink-300);
+}
+.footer-inner {
+  max-width: var(--measure-page);
+  margin: 0 auto;
+  padding: 32px 24px 20px;
 }
 
 /* Sections are ruled, not spaced. */
@@ -224,7 +295,7 @@ th,
   border-left: 0;
 }
 .figure .label {
-  color: var(--muted);
+  color: var(--ink-600);
 }
 .figure .num {
   font: 30px/1.3 var(--mono);
@@ -271,8 +342,10 @@ th {
   padding: 8px 14px 8px 0;
   text-align: left;
   white-space: nowrap;
-  color: var(--muted);
-  border-bottom: 2px solid var(--ink);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-600);
+  border-bottom: 1px solid var(--ink-900);
 }
 td {
   padding: 9px 14px 9px 0;
@@ -313,10 +386,10 @@ tr.failed {
 .bar {
   display: block;
   height: 6px;
-  background: var(--indigo);
+  background: var(--ink-700);
 }
 .hot .bar {
-  background: var(--madder);
+  background: var(--madder-600);
 }
 .hot {
   color: var(--madder);
@@ -328,7 +401,7 @@ tr.failed {
   font-size: 11px;
 }
 .badge.ok {
-  color: var(--indigo);
+  color: var(--ink-600);
 }
 .badge.failed {
   color: var(--madder);
@@ -338,25 +411,19 @@ tr.failed {
 button {
   height: 36px;
   padding: 0 16px;
-  border: 1px solid var(--soft);
-  background: transparent;
-  color: var(--ink);
+  border: 0;
+  background: var(--ink-900);
+  color: var(--paper-100);
+  font-size: 13px;
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 button:hover:not(:disabled) {
-  border-color: var(--ink);
-  color: var(--madder);
+  background: var(--ink-800);
 }
 button.primary {
-  height: 44px;
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--panel);
-}
-button.primary:hover:not(:disabled) {
-  background: var(--madder);
-  border-color: var(--madder);
-  color: var(--panel);
+  height: var(--control-lg);
+  padding: 0 24px;
 }
 button:disabled {
   opacity: 0.4;
@@ -364,28 +431,30 @@ button:disabled {
 }
 input,
 select {
-  height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--soft);
-  background: var(--panel);
-  color: var(--ink);
-  font: 14px var(--mono);
+  height: var(--control-lg);
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 1px solid var(--rule-soft);
+  background: var(--paper-100);
+  color: var(--ink-900);
+  font: 13px var(--mono);
 }
 input:focus,
 select:focus {
   outline: 0;
-  border-bottom: 2px solid var(--madder);
+  border-bottom: 2px solid var(--madder-600);
 }
 label {
   display: block;
-  color: var(--muted);
+  font-size: 12px;
+  color: var(--ink-600);
 }
 label input,
 label select {
   display: block;
   width: 100%;
   max-width: 420px;
-  margin-top: 6px;
+  margin-top: 8px;
   letter-spacing: normal;
   text-transform: none;
 }
@@ -437,7 +506,7 @@ label select {
   color: var(--muted);
 }
 .role.owner {
-  color: var(--indigo);
+  color: var(--ink-900);
 }
 .prompt-row {
   display: grid;
@@ -457,15 +526,15 @@ label select {
   margin: 16px 0;
   padding: 16px;
   overflow-x: auto;
-  background: var(--ink);
-  color: var(--panel);
+  background: var(--ink-900);
+  color: var(--paper-300);
   font: 13px/1.5 var(--mono);
   white-space: pre;
 }
 .panel .label {
   display: block;
   margin-bottom: 8px;
-  color: #a9a28c;
+  color: var(--ink-200);
 }
 .fresh {
   margin: 16px 0;

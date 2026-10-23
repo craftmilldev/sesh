@@ -37,14 +37,18 @@ export function Page({
 
   if (!me) return error ? <p className="error page">{error}</p> : null;
   return (
-    <div className="page">
-      <header className="masthead">
-        <div>
-          <a className="wordmark" href="/app">
-            SESH
-          </a>
+    <>
+      <div className="page">
+        <header className="masthead">
+          <div className="masthead-row">
+            <span className="masthead-rule" />
+            <a className="wordmark" href="/app">
+              SESH
+            </a>
+            <span className="masthead-rule" />
+          </div>
           <p className="strapline">Session ledger · a Craftmill works</p>
-        </div>
+        </header>
         <nav className="nav">
           <a className="tab" href="/app" aria-current={current === "sessions" ? "page" : undefined}>
             Sessions
@@ -52,15 +56,18 @@ export function Page({
           <a className="tab" href="/app/settings" aria-current={current === "settings" ? "page" : undefined}>
             Org &amp; tokens
           </a>
+          <span className="nav-spacer" />
           <span className="who">
             {me.org.name} · {me.user.name}
           </span>
         </nav>
-      </header>
-      <main>
-        <Fragment key={me.org.id}>{children({ me, reload })}</Fragment>
-      </main>
-      <footer className="footer">Sesh · Craftmill · Plumbline LLC, Maine</footer>
-    </div>
+        <main>
+          <Fragment key={me.org.id}>{children({ me, reload })}</Fragment>
+        </main>
+      </div>
+      <footer className="footer">
+        <div className="footer-inner">Sesh · Craftmill · Plumbline LLC, Maine</div>
+      </footer>
+    </>
   );
 }
