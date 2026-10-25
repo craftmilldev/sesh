@@ -10,6 +10,7 @@ interface Token {
 interface Member {
   name: string;
   role: "owner" | "member";
+  counts_toward_team: boolean;
 }
 
 function Field(props: {
@@ -111,10 +112,34 @@ export function Settings({ me, reload }: { me: Me; reload: () => Promise<void> }
           {members.map((m, i) => (
             <li key={i}>
               <span>{m.name}</span>
-              <span className={`role ${m.role}`}>{m.role}</span>
+              <span>
+                {!m.counts_toward_team && <span className="meta">observer · </span>}
+                <span className={`role ${m.role}`}>{m.role}</span>
+              </span>
             </li>
           ))}
         </ul>
+        <label>
+          <input
+            type="checkbox"
+            checked={org.counts_toward_team}
+            onChange={(e) =>
+              void act(async () => {
+                const r = await api<{ tokens_revoked: number }>("/membership", {
+                  body: { counts_toward_team: e.target.checked },
+                });
+                return e.target.checked
+                  ? `You now count toward ${org.name}'s team.`
+                  : `You're an observer in ${org.name}. ${r.tokens_revoked} token(s) revoked.`;
+              })
+            }
+          />{" "}
+          I count toward this team
+        </label>
+        <p className="muted">
+          Turn this off to only look. You drop out of the plan pool, your tokens for {org.name} are revoked and you
+          can't make new ones.
+        </p>
         {org.role === "owner" && (
           <>
             <Field
@@ -158,7 +183,15 @@ export function Settings({ me, reload }: { me: Me; reload: () => Promise<void> }
         />
       </section>
 
-      <Tokens org={org} endpoint={me.ingest_endpoint} />
+      {org.counts_toward_team ? (
+        <Tokens org={org} endpoint={me.ingest_endpoint} />
+      ) : (
+        <section className="section">
+          <p className="eyebrow">Section II · Ingest</p>
+          <h2>Ingest tokens for {org.name}</h2>
+          <p className="muted">You're an observer here, so you can't make tokens or send data.</p>
+        </section>
+      )}
     </>
   );
 }

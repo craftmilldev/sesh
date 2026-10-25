@@ -315,4 +315,52 @@ describe("orgs", () => {
     const guest = await t.signIn("later@example.com");
     expect((await t.call(`/invites/${token}`, { body: {}, session: guest })).status).toBe(200);
   });
+
+  it("makes a member an observer: new members start as one, opting out revokes tokens and blocks new ones", async () => {
+    const t = setup();
+    const owner = await makeOrg(t, await t.signIn("lead@example.com"), "Team O");
+    const guest = await t.signIn("watcher@example.com");
+    await t.call(`/invites/${await invite(t, owner)}`, { body: {}, session: guest });
+    const session = { ...guest, org: await orgIdByName("Team O") };
+
+    expect((await me(t, owner)).org).toMatchObject({ counts_toward_team: true });
+    expect((await me(t, session)).org).toMatchObject({ counts_toward_team: false });
+    const blocked = await t.call("/tokens", { body: { name: "laptop" }, session });
+    expect(blocked.status).toBe(403);
+    expect(await blocked.json()).toMatchObject({ error: "observer" });
+
+    expect((await t.call("/membership", { body: { counts_toward_team: "yes" }, session })).status).toBe(400);
+    expect((await t.call("/membership", { body: { counts_toward_team: true }, session })).status).toBe(200);
+    const made = (await (await t.call("/tokens", { body: { name: "laptop" }, session })).json()) as { token: string };
+    const post = (token: string) =>
+      t.app.request("/v1/limits", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          session_id: "s",
+          five_hour_pct: 10,
+          seven_day_pct: 5,
+          seven_day_resets_at: Math.floor(Date.now() / 1000) + 86400,
+          captured_at: new Date().toISOString(),
+          five_hour_resets_at: Math.floor(Date.now() / 1000) + 3600,
+        }),
+      });
+    expect((await post(made.token)).status).toBe(200);
+    expect(((await (await t.call("/limits", { session: owner })).json()) as { members: number }).members).toBe(2);
+
+    const off = await t.call("/membership", { body: { counts_toward_team: false }, session });
+    expect(await off.json()).toEqual({ counts_toward_team: false, tokens_revoked: 1 });
+    expect((await post(made.token)).status).toBe(401);
+    expect(await (await t.call("/limits", { session: owner })).json()).toMatchObject({
+      members: 1,
+      five_hour_reporting: 0,
+    });
+    expect(t.events.filter((e) => e.event === "team_observer_set").map((e) => e.properties)).toEqual([
+      { tokens_revoked: 1 },
+    ]);
+    expect(t.events.map((e) => e.event)).toContain("team_count_enabled");
+    expect(t.events.filter((e) => e.event === "token_create_rejected").map((e) => e.properties)).toContainEqual({
+      reason: "observer",
+    });
+  });
 });

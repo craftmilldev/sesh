@@ -5,6 +5,7 @@ export interface Org {
   id: string;
   name: string;
   role: "owner" | "member";
+  counts_toward_team: boolean;
 }
 export interface Me {
   user: { name: string };
