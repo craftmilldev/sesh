@@ -188,4 +188,12 @@ CREATE INDEX limit_snapshots_user_idx ON sesh.limit_snapshots (org_id, user_id, 
 ALTER TABLE sesh.limit_snapshots ENABLE ROW LEVEL SECURITY;
 `,
   },
+  {
+    version: "006_counts_toward_team",
+    sql: `
+ALTER TABLE sesh.org_members ADD COLUMN counts_toward_team boolean NOT NULL DEFAULT true;
+
+ALTER TABLE sesh.org_members ALTER COLUMN counts_toward_team SET DEFAULT false;
+`,
+  },
 ];

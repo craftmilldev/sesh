@@ -246,7 +246,10 @@ describe("the team plan pool", () => {
     const member = async (name: string) => {
       const id = uuidv7();
       await db.query(`INSERT INTO sesh.users (id, name, email) VALUES ($1, $2, $3)`, [id, name, `${name}@example.com`]);
-      await db.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`, [orgId, id]);
+      await db.query(
+        `INSERT INTO sesh.org_members (org_id, user_id, role, counts_toward_team) VALUES ($1, $2, 'member', true)`,
+        [orgId, id],
+      );
       return id;
     };
     const [owner] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = $1`, ["pool1@example.com"]);

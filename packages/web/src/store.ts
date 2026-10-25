@@ -15,6 +15,8 @@ export interface Org {
 export type Role = "owner" | "member";
 export interface Membership extends Org {
   role: Role;
+  /** False for an observer: in the org to look, but not part of the team's pool and not sending data. */
+  counts_toward_team: boolean;
 }
 
 export const INVITE_TTL_DAYS = 7;
@@ -81,7 +83,10 @@ export async function redeemLoginCode(db: Db, email: string, code: string): Prom
     );
     const orgId = uuidv7();
     await tx.query(`INSERT INTO sesh.orgs (id, name, personal_user_id) VALUES ($1, $2, $3)`, [orgId, name, user!.id]);
-    await tx.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'owner')`, [orgId, user!.id]);
+    await tx.query(
+      `INSERT INTO sesh.org_members (org_id, user_id, role, counts_toward_team) VALUES ($1, $2, 'owner', true)`,
+      [orgId, user!.id],
+    );
     return { ok: true as const, user: user!, created: true };
   });
 }
@@ -89,7 +94,7 @@ export async function redeemLoginCode(db: Db, email: string, code: string): Prom
 /** Every org the user belongs to, oldest first, with their role in it. */
 export async function userOrgs(db: Db, userId: string): Promise<Membership[]> {
   return db.query<Membership>(
-    `SELECT o.id, o.name, m.role FROM sesh.org_members m JOIN sesh.orgs o ON o.id = m.org_id
+    `SELECT o.id, o.name, m.role, m.counts_toward_team FROM sesh.org_members m JOIN sesh.orgs o ON o.id = m.org_id
      WHERE m.user_id = $1 ORDER BY o.id`,
     [userId],
   );
@@ -102,7 +107,10 @@ export async function createOrg(db: Db, userId: string, name: string): Promise<O
       uuidv7(),
       name,
     ]);
-    await tx.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'owner')`, [org!.id, userId]);
+    await tx.query(
+      `INSERT INTO sesh.org_members (org_id, user_id, role, counts_toward_team) VALUES ($1, $2, 'owner', true)`,
+      [org!.id, userId],
+    );
     return org!;
   });
 }
@@ -176,23 +184,52 @@ export interface IngestToken {
   created_at: Date;
 }
 
-/** Makes a token for the user in an org they belong to. Returns the secret once; only its hash is stored. */
+/**
+ * Makes a token for the user in an org they belong to. Returns the secret once; only its hash is stored.
+ * An observer (not counted toward the team) gets nothing: they can't send data to the org.
+ */
 export async function createIngestToken(
   db: Db,
   userId: string,
   orgId: string,
   name: string,
-): Promise<{ id: string; token: string }> {
+): Promise<{ id: string; token: string } | undefined> {
   const token = newIngestToken();
   const id = uuidv7();
-  await db.query(`INSERT INTO sesh.ingest_tokens (id, org_id, user_id, name, token_hash) VALUES ($1, $2, $3, $4, $5)`, [
-    id,
-    orgId,
-    userId,
-    name,
-    sha256(token),
-  ]);
-  return { id, token };
+  const made = await db.query(
+    `INSERT INTO sesh.ingest_tokens (id, org_id, user_id, name, token_hash)
+     SELECT $1, $2, $3, $4, $5
+     WHERE EXISTS (SELECT 1 FROM sesh.org_members WHERE org_id = $2 AND user_id = $3 AND counts_toward_team)
+     RETURNING id`,
+    [id, orgId, userId, name, sha256(token)],
+  );
+  return made.length ? { id, token } : undefined;
+}
+
+/**
+ * Sets whether the user counts toward the org's team. Turning it off revokes their tokens for the org, so nothing
+ * more reaches it. Returns how many tokens that revoked, or undefined when they aren't in the org.
+ */
+export async function setCountsTowardTeam(
+  db: Db,
+  userId: string,
+  orgId: string,
+  counts: boolean,
+): Promise<{ revoked: number } | undefined> {
+  return db.transaction(async (tx) => {
+    const set = await tx.query(
+      `UPDATE sesh.org_members SET counts_toward_team = $3 WHERE org_id = $1 AND user_id = $2 RETURNING user_id`,
+      [orgId, userId, counts],
+    );
+    if (!set.length) return undefined;
+    if (counts) return { revoked: 0 };
+    const revoked = await tx.query(
+      `UPDATE sesh.ingest_tokens SET revoked_at = now()
+       WHERE org_id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING id`,
+      [orgId, userId],
+    );
+    return { revoked: revoked.length };
+  });
 }
 
 /** The user's live (not revoked) tokens for an org, newest first. */
@@ -214,12 +251,12 @@ export async function revokeIngestToken(db: Db, userId: string, orgId: string, i
   return rows.length > 0;
 }
 
-/** Who a bearer token speaks for. Revoked tokens, and tokens of users no longer in the org, match nothing. */
+/** Who a bearer token speaks for. Revoked tokens, and tokens of users no longer in the org or not counted toward its team, match nothing. */
 export async function findIngestToken(db: Db, token: string): Promise<{ orgId: string; userId: string } | undefined> {
   const [row] = await db.query<{ org_id: string; user_id: string }>(
     `SELECT t.org_id, t.user_id FROM sesh.ingest_tokens t
      JOIN sesh.org_members m ON m.org_id = t.org_id AND m.user_id = t.user_id
-     WHERE t.token_hash = $1 AND t.revoked_at IS NULL`,
+     WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND m.counts_toward_team`,
     [sha256(token)],
   );
   return row && { orgId: row.org_id, userId: row.user_id };
@@ -278,7 +315,7 @@ export interface UserLimits {
 }
 
 /**
- * Each member's current plan usage: their latest snapshot, where a window that has already reset
+ * Each team member's current plan usage (observers are left out): their latest snapshot, where a window that has already reset
  * (its resets_at is past) counts as unknown rather than showing a stale percentage.
  */
 export async function currentLimits(db: Db, orgId: string): Promise<UserLimits[]> {
@@ -293,6 +330,7 @@ export async function currentLimits(db: Db, orgId: string): Promise<UserLimits[]
             CASE WHEN l.seven_day_resets_at > now() THEN l.seven_day_pct END AS seven_day_pct,
             l.captured_at
      FROM sesh.users u
+     JOIN sesh.org_members m ON m.org_id = $1 AND m.user_id = u.id AND m.counts_toward_team
      JOIN LATERAL (
        SELECT * FROM sesh.limit_snapshots WHERE org_id = $1 AND user_id = u.id ORDER BY captured_at DESC LIMIT 1
      ) l ON true
@@ -303,9 +341,12 @@ export async function currentLimits(db: Db, orgId: string): Promise<UserLimits[]
 }
 
 /** An org's members, owners first. */
-export async function listMembers(db: Db, orgId: string): Promise<{ name: string; role: Role }[]> {
-  return db.query<{ name: string; role: Role }>(
-    `SELECT u.name, m.role FROM sesh.org_members m JOIN sesh.users u ON u.id = m.user_id
+export async function listMembers(
+  db: Db,
+  orgId: string,
+): Promise<{ name: string; role: Role; counts_toward_team: boolean }[]> {
+  return db.query<{ name: string; role: Role; counts_toward_team: boolean }>(
+    `SELECT u.name, m.role, m.counts_toward_team FROM sesh.org_members m JOIN sesh.users u ON u.id = m.user_id
      WHERE m.org_id = $1 ORDER BY (m.role = 'owner') DESC, m.created_at, u.id`,
     [orgId],
   );
@@ -320,7 +361,7 @@ export interface PlanPool {
 }
 
 /**
- * The team's plan window as one pool: every member is an equal 1/N share of 100%, a member's share used is their
+ * The team's plan window as one pool: every member counted toward the team (not observers) is an equal 1/N share of 100%, a member's share used is their
  * current reading, and a member with none (never reported, or the window has reset) counts as 0% used.
  */
 export function poolUsed(used: number[], members: number): number {
@@ -330,7 +371,10 @@ export function poolUsed(used: number[], members: number): number {
 }
 
 export async function planPool(db: Db, orgId: string): Promise<PlanPool> {
-  const [row] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.org_members WHERE org_id = $1`, [orgId]);
+  const [row] = await db.query<{ n: string }>(
+    `SELECT count(*) AS n FROM sesh.org_members WHERE org_id = $1 AND counts_toward_team`,
+    [orgId],
+  );
   const members = Number(row!.n);
   const limits = await currentLimits(db, orgId);
   const five = limits.map((l) => l.five_hour_pct).filter((v) => v != null);

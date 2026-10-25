@@ -26,7 +26,10 @@ async function member(tag: string) {
   const orgId = uuidv7();
   await db.query(`INSERT INTO sesh.users (id, name, email) VALUES ($1, $2, $3)`, [userId, tag, `${tag}@example.com`]);
   await db.query(`INSERT INTO sesh.orgs (id, name) VALUES ($1, $2)`, [orgId, tag]);
-  await db.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'owner')`, [orgId, userId]);
+  await db.query(
+    `INSERT INTO sesh.org_members (org_id, user_id, role, counts_toward_team) VALUES ($1, $2, 'owner', true)`,
+    [orgId, userId],
+  );
   return { userId, orgId };
 }
 const store = (w: { orgId: string; userId: string }, body: string | Uint8Array, extra = {}) =>
