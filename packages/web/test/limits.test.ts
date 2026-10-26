@@ -343,7 +343,10 @@ describe("the team's 7 day pace", () => {
     const [owner] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = $1`, ["pace1@example.com"]);
     const other = uuidv7();
     await db.query(`INSERT INTO sesh.users (id, name, email) VALUES ($1, 'pace1b', 'pace1b@example.com')`, [other]);
-    await db.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`, [orgId, other]);
+    await db.query(
+      `INSERT INTO sesh.org_members (org_id, user_id, role, counts_toward_team) VALUES ($1, $2, 'member', true)`,
+      [orgId, other],
+    );
     const read = (userId: string, sessionId: string, pct: number, resets: string, at: string) =>
       storeLimitSnapshot(
         db,
