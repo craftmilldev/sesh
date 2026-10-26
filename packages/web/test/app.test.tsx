@@ -6,6 +6,7 @@ import { Home } from "../client/home.js";
 import { Landing } from "../client/landing.js";
 import { Chrome, Page } from "../client/layout.js";
 import { Members } from "../client/members.js";
+import { page } from "../client/routes.js";
 import { Tokens } from "../client/tokens.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -16,8 +17,8 @@ const orgs = [
 ];
 
 /** A fake API where /me reports whichever org the last switch chose. */
-function fakeApi(opts: { sessions?: number } = {}) {
-  let active = orgs[0]!;
+function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
+  let active = opts.observer ? { ...orgs[0]!, counts_toward_team: false } : orgs[0]!;
   const sessions = opts.sessions ?? 3;
   return vi.fn(async (url: string, init?: RequestInit) => {
     const path = url.replace(/^\/api/, "").split("?")[0];
@@ -200,5 +201,31 @@ describe("signed-in pages", () => {
     expect(text()).toContain("<your token>");
     expect(text()).not.toContain("Send invite");
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("shows only the observer message on Tokens when the user does not count toward the team", async () => {
+    vi.stubGlobal("fetch", fakeApi({ observer: true }));
+    await act(async () => root.render(tokensPage()));
+    expect(text()).toContain("You're an observer here, so you can't make tokens or send data.");
+    expect(text()).not.toContain("Create token");
+    expect(text()).not.toContain("token of alpha");
+    expect(text()).toContain("Plan usage comes from the Claude Code status line");
+  });
+
+  it("routes /app/members and /app/tokens to their tabs, and sends /app/settings to Members", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    const replace = vi.fn();
+    vi.stubGlobal("location", { replace });
+    for (const [path, tab] of [
+      ["/app/members", "Members"],
+      ["/app/tokens", "Tokens"],
+    ] as const) {
+      await act(async () => root.render(page(path)));
+      expect(container.querySelector(".tab[aria-current]")!.textContent).toBe(tab);
+      expect(container.querySelector("h1")!.textContent).toBe(tab);
+    }
+    expect(replace).not.toHaveBeenCalled();
+    await act(async () => root.render(page("/app/settings")));
+    expect(replace).toHaveBeenCalledWith("/app/members");
   });
 });
