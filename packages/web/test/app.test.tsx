@@ -10,8 +10,8 @@ import { Settings } from "../client/settings.js";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const orgs = [
-  { id: "o1", name: "alpha", role: "owner" },
-  { id: "o2", name: "beta", role: "member" },
+  { id: "o1", name: "alpha", role: "owner", counts_toward_team: true },
+  { id: "o2", name: "beta", role: "member", counts_toward_team: true },
 ];
 
 /** A fake API where /me reports whichever org the last switch chose. */

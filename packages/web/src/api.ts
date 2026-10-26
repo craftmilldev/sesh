@@ -199,7 +199,12 @@ export function createApp(opts: AppOptions) {
     await next();
   });
 
-  const membership = (m: store.Membership) => ({ id: m.id, name: m.name, role: m.role });
+  const membership = (m: store.Membership) => ({
+    id: m.id,
+    name: m.name,
+    role: m.role,
+    counts_toward_team: m.counts_toward_team,
+  });
 
   scoped.get("/me", async (c) => {
     const { user, org, orgs } = c.var;
@@ -360,6 +365,25 @@ export function createApp(opts: AppOptions) {
     return c.json({ email, ttl_days: store.INVITE_TTL_DAYS }, 201);
   });
 
+  // Whether the signed-in user counts toward the active org's team. Off makes them an observer and revokes their tokens.
+  scoped.post("/membership", async (c) => {
+    const { user, org } = c.var;
+    const counts = (await jsonBody(c)).counts_toward_team;
+    if (typeof counts !== "boolean") {
+      await metrics.capture("team_membership_rejected", user.id, { reason: "invalid_value" });
+      return fail(c, 400, "invalid_value", "Say whether you count toward the team: true or false.");
+    }
+    const set = await store.setCountsTowardTeam(await opts.getDb(), user.id, org.id, counts);
+    if (!set) {
+      await metrics.capture("team_membership_rejected", user.id, { reason: "not_a_member" });
+      return fail(c, 404, "not_a_member", "You aren't in that org.");
+    }
+    await metrics.capture(counts ? "team_count_enabled" : "team_observer_set", user.id, {
+      tokens_revoked: set.revoked,
+    });
+    return c.json({ counts_toward_team: counts, tokens_revoked: set.revoked });
+  });
+
   // Ingest tokens belong to the signed-in user and the active org, so there is no org id to tamper with.
   scoped.get("/tokens", async (c) => {
     const { user, org } = c.var;
@@ -380,6 +404,15 @@ export function createApp(opts: AppOptions) {
       );
     }
     const made = await store.createIngestToken(await opts.getDb(), user.id, org.id, name);
+    if (!made) {
+      await metrics.capture("token_create_rejected", user.id, { reason: "observer" });
+      return fail(
+        c,
+        403,
+        "observer",
+        `You're an observer in ${org.name}, so you can't send it data. Count yourself toward the team first.`,
+      );
+    }
     await metrics.capture("token_created", user.id);
     // Shown on this response only: it is stored hashed.
     return c.json({ id: made.id, name, token: made.token }, 201);
