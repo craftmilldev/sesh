@@ -12,6 +12,7 @@ export function OrgSwitcher({ orgs, current, reload }: { orgs: Org[]; current: O
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -66,6 +67,8 @@ export function OrgSwitcher({ orgs, current, reload }: { orgs: Org[]; current: O
 
   /** Runs a switch or a create, then reloads; a failure stays in the menu. */
   async function run(action: () => Promise<string>) {
+    if (busy) return;
+    setBusy(true);
     setError(undefined);
     try {
       saveOrg(await action());
@@ -74,6 +77,8 @@ export function OrgSwitcher({ orgs, current, reload }: { orgs: Org[]; current: O
       close(true);
     } catch (err) {
       setError(message(err));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -110,6 +115,7 @@ export function OrgSwitcher({ orgs, current, reload }: { orgs: Org[]; current: O
                 role="menuitem"
                 className="org-switch-item"
                 aria-current={o.id === current.id ? "page" : undefined}
+                disabled={busy}
                 onClick={() => void choose(o)}
               >
                 <span className="org-switch-check" aria-hidden>
@@ -131,7 +137,9 @@ export function OrgSwitcher({ orgs, current, reload }: { orgs: Org[]; current: O
                 required
               />
             </label>
-            <button type="submit">Create</button>
+            <button type="submit" disabled={busy}>
+              Create
+            </button>
           </form>
           {error && (
             <p className="error" role="alert">
