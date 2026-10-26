@@ -384,15 +384,17 @@ export function expectedUsed(resetsAt: Date, now: Date): number {
   return (100 * weekdayMs(start, now)) / (5 * DAY_MS);
 }
 
-/** An org's members, owners first. */
+/** An org's members, owners first. `you` marks `userId`'s own row. */
 export async function listMembers(
   db: Db,
   orgId: string,
-): Promise<{ name: string; role: Role; counts_toward_team: boolean }[]> {
-  return db.query<{ name: string; role: Role; counts_toward_team: boolean }>(
-    `SELECT u.name, m.role, m.counts_toward_team FROM sesh.org_members m JOIN sesh.users u ON u.id = m.user_id
+  userId: string,
+): Promise<{ name: string; role: Role; counts_toward_team: boolean; you: boolean }[]> {
+  return db.query<{ name: string; role: Role; counts_toward_team: boolean; you: boolean }>(
+    `SELECT u.name, m.role, m.counts_toward_team, (m.user_id = $2) AS you
+     FROM sesh.org_members m JOIN sesh.users u ON u.id = m.user_id
      WHERE m.org_id = $1 ORDER BY (m.role = 'owner') DESC, m.created_at, u.id`,
-    [orgId],
+    [orgId, userId],
   );
 }
 

@@ -6,6 +6,7 @@ interface Member {
   name: string;
   role: "owner" | "member";
   counts_toward_team: boolean;
+  you: boolean;
 }
 
 function Field(props: {
@@ -101,40 +102,58 @@ export function Members({ me, reload }: { me: Me; reload: () => Promise<void> })
       </section>
 
       <section className="section">
-        <ul className="rows" style={{ marginTop: 16 }}>
-          {members.map((m, i) => (
-            <li key={i}>
-              <span>{m.name}</span>
-              <span>
-                {!m.counts_toward_team && <span className="meta">observer · </span>}
-                <span className={`role ${m.role}`}>{m.role}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-        <label>
-          <input
-            type="checkbox"
-            checked={org.counts_toward_team}
-            onChange={(e) =>
-              void act(async () => {
-                const r = await api<{ tokens_revoked: number }>("/membership", {
-                  body: { counts_toward_team: e.target.checked },
-                });
-                return e.target.checked
-                  ? `You now count toward ${org.name}'s team.`
-                  : `You're an observer in ${org.name}. ${r.tokens_revoked} token(s) revoked.`;
-              })
-            }
-          />{" "}
-          I count toward this team
-        </label>
+        <div className="table-scroll" style={{ marginTop: 16 }}>
+          <table className="ledger">
+            <thead>
+              <tr>
+                <th>Person</th>
+                <th>Role</th>
+                <th className="num">Counts toward team</th>
+              </tr>
+            </thead>
+            <tbody>
+              {members.map((m, i) => (
+                <tr key={i}>
+                  <td className="person">
+                    {m.name}
+                    {m.you && <em> you</em>}
+                  </td>
+                  <td>
+                    <span className={`role ${m.role}`}>{m.role}</span>
+                  </td>
+                  <td className="num">
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={m.counts_toward_team}
+                        disabled={!m.you}
+                        aria-label={`${m.name} ${m.counts_toward_team ? "counts" : "does not count"} toward the team`}
+                        onChange={(e) => {
+                          const counts = e.target.checked; // read now: a controlled box is reset by the time the save returns
+                          void act(async () => {
+                            const r = await api<{ tokens_revoked: number }>("/membership", {
+                              body: { counts_toward_team: counts },
+                            });
+                            await loadMembers();
+                            return counts
+                              ? `You now count toward ${org.name}'s team.`
+                              : `You're an observer in ${org.name}. ${r.tokens_revoked} token(s) revoked.`;
+                          });
+                        }}
+                      />
+                    </label>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <p className="muted">
-          Turn this off to only look. You drop out of the plan pool, your tokens for {org.name} are revoked and you
-          can't make new ones.
+          You can change only your own. Untick it to only look: you leave the plan pool, your tokens for {org.name} are
+          revoked, and you can't make new ones.
         </p>
         {org.role === "owner" && (
-          <>
+          <div className="invite">
             <Field
               label="Invite by email"
               button="Send invite"
@@ -148,7 +167,7 @@ export function Members({ me, reload }: { me: Me; reload: () => Promise<void> })
               }
             />
             <p className="muted">The link works once and lasts seven days.</p>
-          </>
+          </div>
         )}
         {orgs.length > 1 && (
           <SwitchOrg
