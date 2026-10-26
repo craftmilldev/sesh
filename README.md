@@ -16,9 +16,9 @@ the SPA's pages are sent with a Content-Security-Policy that allows only the app
 and a personal org they own; a returning one signs in to the same org. `/app` shows the name and active org; the API
 answers 401 to a missing or bad token and the SPA sends the user to `/login`. Users can create more orgs (they own what
 they create), and an owner can email a one-use invite link (valid 7 days) for the active org to someone; the invitee
-logs in, opens the link and joins as a member. A switcher on `/app/settings` changes the active org. Only owners invite.
+logs in, opens the link and joins as a member. A switcher on `/app/members` changes the active org. Only owners invite.
 
-Any member can make ingest tokens on `/app/settings` (`/api/tokens`) for the active org (named, shown once, stored hashed, revocable). The
+Any member can make ingest tokens on `/app/tokens` (`/api/tokens`) for the active org (named, shown once, stored hashed, revocable). The
 page shows the `OTEL_*` env vars to set for Claude Code, which sends OTLP/HTTP to `POST /v1/logs` and `/v1/metrics`
 with `Authorization: Bearer <token>`; the token says which org and user. Each accepted payload (JSON or protobuf,
 optionally gzipped, up to 4 MB) is stored as it arrived in `sesh.raw_payloads`. Logs payloads are then parsed (`src/claude-code.ts`, `src/parse.ts`) into
@@ -30,8 +30,8 @@ Only JSON logs are parsed so far; protobuf payloads stay raw.
 `/app` is about the team, not individuals, and names no one. It shows today's sessions (since the viewer's local midnight,
 `GET /api/today?since=ISO`): total tokens, cache hit, prompts and tool calls, the team's plan-window pool, and the 5
 heaviest sessions with their share of the day. `/app/sessions` is the full list (`GET /api/sessions?page=N`, 25 a page,
-newest first) and `/app/sessions/<id>` one session with its prompts and events. `/app/settings` holds the member list
-(`GET /api/members`), invites, org switching and creation, and ingest tokens. An org with no sessions shows how to
+newest first) and `/app/sessions/<id>` one session with its prompts and events. `/app/members` holds the member list
+(`GET /api/members`), invites, org switching and creation; `/app/tokens` holds the ingest tokens. An org with no sessions shows how to
 connect Claude Code. The UI is in the Craftmill house style (paper, ink, ruled lines; Sorts Mill Goudy and Courier Prime,
 self-hosted under `public/fonts/` and served by `src/ui.ts`, so the CSP stays `style-src 'self'`).
 
@@ -58,7 +58,7 @@ ingest token from the `Authorization=Bearer <token>` in `OTEL_EXPORTER_OTLP_HEAD
 variables to the status line (not even ones set in settings.json `env`), so the installer works these out and saves
 them as `{ "url", "token" }` in `config.json` next to the script, which the script reads. `SESH_URL` and `SESH_TOKEN`
 override that, and the `OTEL_*` variables are used if they ever do arrive; with none it only prints the bar. Once the
-OTel env vars from `/app/settings` are set up, install it with:
+OTel env vars from `/app/tokens` are set up, install it with:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/craftmilldev/sesh/main/install.sh | sh

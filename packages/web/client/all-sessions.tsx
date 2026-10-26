@@ -45,7 +45,7 @@ export function AllSessions() {
       </div>
       {data.total === 0 ? (
         <p className="prose">
-          Sessions appear here once Claude Code sends its first events. <a href="/app/settings">Org &amp; tokens</a>
+          Sessions appear here once Claude Code sends its first events. <a href="/app/tokens">Tokens</a>
         </p>
       ) : (
         <>

@@ -69,7 +69,15 @@ export function createWeb(opts: WebOptions = {}) {
     return c.html(SHELL, 200, SECURITY_HEADERS);
   });
   // Whether there is a session, and whether an invite works, is decided by the API calls the page makes.
-  for (const path of ["/app", "/app/sessions", "/app/settings", "/app/sessions/:id", "/invite/:token"])
+  for (const path of [
+    "/app",
+    "/app/sessions",
+    "/app/settings",
+    "/app/members",
+    "/app/tokens",
+    "/app/sessions/:id",
+    "/invite/:token",
+  ])
     app.get(path, (c) => c.html(SHELL, 200, SECURITY_HEADERS));
 
   for (const [path, { url, type }] of Object.entries(BUNDLE)) {
