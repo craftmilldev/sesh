@@ -692,6 +692,47 @@ code {
   margin-bottom: 20px;
 }
 
+/* Ledger table and ghost button (tokens). */
+table.ledger td {
+  padding: 10px 14px 10px 0;
+}
+table.ledger td:last-child,
+table.ledger th:last-child {
+  padding-right: 0;
+}
+table.ledger tbody tr:hover {
+  background: transparent;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+button.ghost {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-900);
+}
+button.ghost:hover:not(:disabled) {
+  border-color: var(--rule-soft);
+  background: transparent;
+}
+.fresh button.ghost {
+  margin-top: 12px;
+}
+.env {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--ink-900);
+}
+.env .panel {
+  margin: 8px 0 16px;
+  color: var(--paper-100);
+}
+
 /* The header's org switcher: a button for the current org and a menu of orgs with New org under them. */
 .org-switch {
   position: relative;

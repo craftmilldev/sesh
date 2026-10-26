@@ -75,9 +75,11 @@ function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
                     { name: "Sam", role: "member", counts_toward_team: false, you: false },
                   ],
                 }
-              : path === "/tokens"
-                ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
-                : {};
+              : path === "/tokens" && init?.method === "POST"
+                ? { token: "sesh_fresh" }
+                : path === "/tokens"
+                  ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
+                  : {};
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   });
 }
@@ -238,15 +240,49 @@ describe("signed-in pages", () => {
     expect(text()).toContain("Your tokens let Claude Code send alpha its session events.");
     expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Tokens");
     expect(text()).toContain("token of alpha");
-    expect(text()).toContain("<your token>");
+    expect(container.querySelector("table.ledger th .sr-only")!.textContent).toBe("Actions");
+    expect(container.querySelector("table.ledger button.ghost")!.textContent).toBe("Revoke");
+    expect(container.querySelector(".panel")!.textContent).toContain("<your token>");
     expect(text()).not.toContain("Send invite");
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("copies the fresh token, says so, resets on the next create, and reports a refused clipboard", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    const writeText = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("denied"));
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    await act(async () => root.render(tokensPage()));
+    const type = async (value: string) => {
+      const input = container.querySelector<HTMLInputElement>("form input")!;
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.bind(input);
+      await act(async () => {
+        set(value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => container.querySelector<HTMLFormElement>("form")!.requestSubmit());
+    };
+    const copyButton = () => container.querySelector<HTMLButtonElement>(".fresh button.ghost")!;
+    await type("laptop");
+    expect(container.querySelector(".fresh code")!.textContent).toBe("sesh_fresh");
+    expect(copyButton().textContent).toBe("Copy");
+    await act(async () => copyButton().click());
+    expect(writeText).toHaveBeenCalledWith("sesh_fresh");
+    expect(copyButton().textContent).toBe("Copied");
+    await type("desktop");
+    expect(copyButton().textContent).toBe("Copy");
+    await act(async () => copyButton().click());
+    expect(container.querySelector(".notice.error")!.textContent).toContain("Couldn't copy");
   });
 
   it("shows only the observer message on Tokens when the user does not count toward the team", async () => {
     vi.stubGlobal("fetch", fakeApi({ observer: true }));
     await act(async () => root.render(tokensPage()));
-    expect(text()).toContain("You're an observer here, so you can't make tokens or send data.");
+    expect(text()).toContain(
+      "You only look at alpha, so you have no tokens here. Tick Counts on Members to make some.",
+    );
+    expect(container.querySelector('a[href="/app/members"]:not(.tab)')!.textContent).toBe("Members");
+    expect(container.querySelector("table.ledger")).toBeNull();
+    expect(container.querySelector(".panel")).toBeNull();
     expect(text()).not.toContain("Create token");
     expect(text()).not.toContain("token of alpha");
     expect(text()).toContain("Plan usage comes from the Claude Code status line");
