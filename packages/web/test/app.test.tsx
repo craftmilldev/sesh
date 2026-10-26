@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../client/home.js";
 import { Landing } from "../client/landing.js";
 import { Chrome, Page } from "../client/layout.js";
-import { Settings } from "../client/settings.js";
+import { Members } from "../client/members.js";
+import { page } from "../client/routes.js";
+import { Tokens } from "../client/tokens.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -15,8 +17,8 @@ const orgs = [
 ];
 
 /** A fake API where /me reports whichever org the last switch chose. */
-function fakeApi(opts: { sessions?: number } = {}) {
-  let active = orgs[0]!;
+function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
+  let active = opts.observer ? { ...orgs[0]!, counts_toward_team: false } : orgs[0]!;
   const sessions = opts.sessions ?? 3;
   return vi.fn(async (url: string, init?: RequestInit) => {
     const path = url.replace(/^\/api/, "").split("?")[0];
@@ -85,7 +87,8 @@ describe("signed-in pages", () => {
 
   const text = () => container.textContent ?? "";
   const sessionsPage = () => <Page current="sessions">{({ me }) => <Home orgName={me.org.name} />}</Page>;
-  const settingsPage = () => <Page current="settings">{(ctx) => <Settings {...ctx} />}</Page>;
+  const membersPage = () => <Page current="members">{(ctx) => <Members {...ctx} />}</Page>;
+  const tokensPage = () => <Page current="tokens">{({ me }) => <Tokens me={me} />}</Page>;
 
   it("draws the same masthead and footer, with the current tab marked and no role or org switcher", async () => {
     vi.stubGlobal("fetch", fakeApi());
@@ -93,8 +96,8 @@ describe("signed-in pages", () => {
     expect(container.querySelector(".wordmark")!.getAttribute("href")).toBe("/app");
     expect(container.querySelector(".strapline")!.textContent).toBe("Session ledger · a Craftmill works");
     const tabs = [...container.querySelectorAll(".tab")];
-    expect(tabs.map((a) => a.getAttribute("href"))).toEqual(["/app", "/app/settings"]);
-    expect(tabs.map((a) => a.getAttribute("aria-current"))).toEqual(["page", null]);
+    expect(tabs.map((a) => a.getAttribute("href"))).toEqual(["/app", "/app/members", "/app/tokens"]);
+    expect(tabs.map((a) => a.getAttribute("aria-current"))).toEqual(["page", null, null]);
     expect(container.querySelector(".who")!.textContent).toBe("alpha · Ada");
     expect(container.querySelector("select")).toBeNull();
     expect(container.querySelector(".nav-button")!.textContent).toBe("Sign out");
@@ -105,7 +108,7 @@ describe("signed-in pages", () => {
     vi.stubGlobal("fetch", fakeApi());
     const replace = vi.fn();
     vi.stubGlobal("location", { replace });
-    await act(async () => root.render(settingsPage()));
+    await act(async () => root.render(membersPage()));
     const buttons = [...container.querySelectorAll("button")].filter((b) => b.textContent === "Sign out");
     expect(buttons).toHaveLength(1);
     expect(buttons[0]!.closest(".nav")).not.toBeNull();
@@ -160,14 +163,16 @@ describe("signed-in pages", () => {
     expect(container.querySelector("table")).toBeNull();
   });
 
-  it("puts members, the org forms and tokens on the settings page, once per org after each switch", async () => {
+  it("puts members and the org forms on the Members tab, once per org after each switch", async () => {
     vi.stubGlobal("fetch", fakeApi());
-    await act(async () => root.render(settingsPage()));
-    const headings = () => [...container.querySelectorAll("h2")].map((h) => h.textContent);
-    expect(container.querySelector("h1")!.textContent).toBe("Org and tokens");
-    expect(headings()).toEqual(["alpha", "Ingest tokens for alpha"]);
+    await act(async () => root.render(membersPage()));
+    const eyebrow = () => container.querySelector(".eyebrow")!.textContent;
+    expect(container.querySelector("h1")!.textContent).toBe("Members");
+    expect(eyebrow()).toBe("alpha · You own this org");
+    expect(text()).toContain("Who is in alpha, and who counts toward its team plan.");
+    expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Members");
     expect(text()).toContain("Ada");
-    expect(text()).toContain("token of alpha");
+    expect(text()).not.toContain("token of alpha");
 
     const switchTo = async (id: string) => {
       const select = container.querySelector("select")!;
@@ -179,11 +184,48 @@ describe("signed-in pages", () => {
       await act(async () => button.click());
     };
     await switchTo("o2");
-    expect(headings()).toEqual(["beta", "Ingest tokens for beta"]);
-    expect(text()).toContain("token of beta");
-    expect(text()).not.toContain("token of alpha");
+    expect(eyebrow()).toBe("beta · Member");
     expect(container.querySelectorAll(".tab[aria-current]")).toHaveLength(1);
     expect(container.textContent).not.toContain("Send invite"); // beta: a member, not an owner
     expect(consoleError).not.toHaveBeenCalled(); // no duplicate-key warnings
+  });
+
+  it("puts the tokens and the env snippet on the Tokens tab, with the observer state", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    await act(async () => root.render(tokensPage()));
+    expect(container.querySelector("h1")!.textContent).toBe("Tokens");
+    expect(container.querySelector(".eyebrow")!.textContent).toBe("alpha · Ingest");
+    expect(text()).toContain("Your tokens let Claude Code send alpha its session events.");
+    expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Tokens");
+    expect(text()).toContain("token of alpha");
+    expect(text()).toContain("<your token>");
+    expect(text()).not.toContain("Send invite");
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("shows only the observer message on Tokens when the user does not count toward the team", async () => {
+    vi.stubGlobal("fetch", fakeApi({ observer: true }));
+    await act(async () => root.render(tokensPage()));
+    expect(text()).toContain("You're an observer here, so you can't make tokens or send data.");
+    expect(text()).not.toContain("Create token");
+    expect(text()).not.toContain("token of alpha");
+    expect(text()).toContain("Plan usage comes from the Claude Code status line");
+  });
+
+  it("routes /app/members and /app/tokens to their tabs, and sends /app/settings to Members", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    const replace = vi.fn();
+    vi.stubGlobal("location", { replace });
+    for (const [path, tab] of [
+      ["/app/members", "Members"],
+      ["/app/tokens", "Tokens"],
+    ] as const) {
+      await act(async () => root.render(page(path)));
+      expect(container.querySelector(".tab[aria-current]")!.textContent).toBe(tab);
+      expect(container.querySelector("h1")!.textContent).toBe(tab);
+    }
+    expect(replace).not.toHaveBeenCalled();
+    await act(async () => root.render(page("/app/settings")));
+    expect(replace).toHaveBeenCalledWith("/app/members");
   });
 });

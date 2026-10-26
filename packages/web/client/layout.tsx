@@ -32,7 +32,7 @@ export function Chrome({
   me,
   children,
 }: {
-  current?: "sessions" | "settings" | "login";
+  current?: "sessions" | "members" | "tokens" | "login";
   me?: Me;
   children?: ReactNode;
 }) {
@@ -55,8 +55,11 @@ export function Chrome({
               <a className="tab" href="/app" aria-current={current === "sessions" ? "page" : undefined}>
                 Sessions
               </a>
-              <a className="tab" href="/app/settings" aria-current={current === "settings" ? "page" : undefined}>
-                Org &amp; tokens
+              <a className="tab" href="/app/members" aria-current={current === "members" ? "page" : undefined}>
+                Members
+              </a>
+              <a className="tab" href="/app/tokens" aria-current={current === "tokens" ? "page" : undefined}>
+                Tokens
               </a>
             </>
           )}
@@ -93,7 +96,7 @@ export function Page({
   current,
   children,
 }: {
-  current: "sessions" | "settings";
+  current: "sessions" | "members" | "tokens";
   children: (ctx: { me: Me; reload: () => Promise<void> }) => ReactNode;
 }) {
   const [me, setMe] = useState<Me>();

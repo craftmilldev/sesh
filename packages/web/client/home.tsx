@@ -79,8 +79,8 @@ export function Home({ orgName }: { orgName: string }) {
       {today.org_sessions === 0 ? (
         <section className="section">
           <p className="prose">
-            Sessions appear here once Claude Code sends its first events. <a href="/app/settings">Org &amp; tokens</a>{" "}
-            has the token and the settings to connect it.
+            Sessions appear here once Claude Code sends its first events. <a href="/app/tokens">Tokens</a> has the token
+            and the settings to connect it.
           </p>
         </section>
       ) : (
