@@ -198,7 +198,9 @@ describe("signed-in pages", () => {
     expect(text()).toContain("Your tokens let Claude Code send alpha its session events.");
     expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Tokens");
     expect(text()).toContain("token of alpha");
-    expect(text()).toContain("<your token>");
+    expect(container.querySelector("table.ledger th .sr-only")!.textContent).toBe("Actions");
+    expect(container.querySelector("table.ledger button.ghost")!.textContent).toBe("Revoke");
+    expect(container.querySelector(".panel")!.textContent).toContain("<your token>");
     expect(text()).not.toContain("Send invite");
     expect(consoleError).not.toHaveBeenCalled();
   });
@@ -206,7 +208,12 @@ describe("signed-in pages", () => {
   it("shows only the observer message on Tokens when the user does not count toward the team", async () => {
     vi.stubGlobal("fetch", fakeApi({ observer: true }));
     await act(async () => root.render(tokensPage()));
-    expect(text()).toContain("You're an observer here, so you can't make tokens or send data.");
+    expect(text()).toContain(
+      "You only look at alpha, so you have no tokens here. Tick Counts on Members to make some.",
+    );
+    expect(container.querySelector('a[href="/app/members"]:not(.tab)')!.textContent).toBe("Members");
+    expect(container.querySelector("table.ledger")).toBeNull();
+    expect(container.querySelector(".panel")).toBeNull();
     expect(text()).not.toContain("Create token");
     expect(text()).not.toContain("token of alpha");
     expect(text()).toContain("Plan usage comes from the Claude Code status line");

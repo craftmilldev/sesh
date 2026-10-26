@@ -14,6 +14,7 @@ export function Tokens({ me }: { me: Me }) {
   const [tokens, setTokens] = useState<Token[]>([]);
   const [created, setCreated] = useState<string>();
   const [name, setName] = useState("");
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string>();
 
   const load = useCallback(async () => setTokens((await api<{ tokens: Token[] }>("/tokens")).tokens), []);
@@ -28,6 +29,15 @@ export function Tokens({ me }: { me: Me }) {
       await load();
     } catch (err) {
       setError(message(err));
+    }
+  }
+
+  async function copy(token: string) {
+    try {
+      await navigator.clipboard.writeText(token);
+      setCopied(true);
+    } catch {
+      setError("Couldn't copy. Select the token and copy it by hand.");
     }
   }
 
@@ -48,34 +58,58 @@ OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${token}"`;
       </p>
       {error && <p className="notice error">{error}</p>}
       {!org.counts_toward_team ? (
-        <p className="muted">You're an observer here, so you can't make tokens or send data.</p>
+        <p className="muted">
+          You only look at {org.name}, so you have no tokens here. Tick Counts on <a href="/app/members">Members</a> to
+          make some.
+        </p>
       ) : (
         <>
           {created && (
             <div className="fresh">
               <span className="label">Copy it now · it will not be shown again</span>
               <code>{created}</code>
+              <button type="button" className="ghost" onClick={() => void copy(created)}>
+                {copied ? "Copied" : "Copy"}
+              </button>
             </div>
           )}
-          <ul className="rows" style={{ marginTop: 16 }}>
-            {tokens.map((t) => (
-              <li key={t.id}>
-                <span>
-                  {t.name}
-                  {t.created_at && <span className="meta"> · made {new Date(t.created_at).toLocaleDateString()}</span>}
-                </span>
-                <button type="button" onClick={() => void run(() => api(`/tokens/${t.id}/revoke`, { body: {} }))}>
-                  Revoke
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="table-scroll">
+            <table className="ledger">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th className="num">Made</th>
+                  <th>
+                    <span className="sr-only">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {tokens.map((t) => (
+                  <tr key={t.id}>
+                    <td>{t.name}</td>
+                    <td className="num muted">{t.created_at && new Date(t.created_at).toLocaleDateString()}</td>
+                    <td className="num">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => void run(() => api(`/tokens/${t.id}/revoke`, { body: {} }))}
+                      >
+                        Revoke
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <form
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
               void run(async () => {
                 setCreated((await api<{ token: string }>("/tokens", { body: { name } })).token);
+                setCopied(false);
                 setName("");
               });
             }}
@@ -94,9 +128,9 @@ OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${token}"`;
               Create token
             </button>
           </form>
-          <div className="panel">
+          <div className="env">
             <span className="label">Set these where Claude Code runs</span>
-            {snippet(created ?? "<your token>")}
+            <div className="panel">{snippet(created ?? "<your token>")}</div>
           </div>
         </>
       )}
