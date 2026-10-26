@@ -5,7 +5,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../src/db/index.js";
 import { openTestDb } from "../src/db/testing.js";
 import { parsePending } from "../src/parse.js";
-import { planPool, poolUsed, storeLimitSnapshot, storeRawPayload } from "../src/store.js";
+import {
+  expectedUsed,
+  planPool,
+  poolPace,
+  poolUsed,
+  storeLimitSnapshot,
+  storeRawPayload,
+  weekdayMs,
+} from "../src/store.js";
 import { uuidv7 } from "../src/ids.js";
 import { formatBar, parseInput, readConfig, reportable, target } from "../statusline/sesh-statusline.js";
 import { type Session, setupApp } from "./harness.js";
@@ -197,10 +205,11 @@ describe("POST /v1/limits", () => {
     await t.post(snapshot({ session_id: id, five_hour_pct: 0, seven_day_pct: 4, captured_at: at(60_000) }));
     expect((await list())[0]).toMatchObject({ five_hour_pct: 0, seven_day_pct: 4 });
 
+    // The pool takes each window's highest reading, since usage only rises until the window resets.
     const pool = (await (await t.call("/limits", { session: t.session })).json()) as Record<string, unknown>;
-    expect(pool).toEqual({
+    expect(pool).toMatchObject({
       members: 1,
-      five_hour_used: 0,
+      five_hour_used: 10,
       seven_day_used: 4,
       five_hour_reporting: 1,
       seven_day_reporting: 1,
@@ -275,12 +284,98 @@ describe("the team plan pool", () => {
     await read(b, 50, soon);
     await read(d, 90, new Date(Date.now() - 60_000));
 
-    expect(await planPool(db, orgId)).toEqual({
+    expect(await planPool(db, orgId)).toMatchObject({
       members: 4,
       five_hour_used: 19, // (25 + 50) / 4, rounded
       seven_day_used: 21, // (12.5 + 25 + 45) / 4, rounded
       five_hour_reporting: 2,
       seven_day_reporting: 3,
+    });
+  });
+});
+
+describe("the team's 7 day pace", () => {
+  const H = 3600_000;
+  // A window that resets Wednesday 13:00 UTC, so it opened Wednesday 2026-10-21 13:00.
+  const wednesday = new Date("2026-10-28T13:00:00Z");
+
+  it("counts weekday time only, in UTC", () => {
+    expect(weekdayMs(new Date("2026-10-23T20:00:00Z"), new Date("2026-10-26T02:00:00Z"))).toBe(6 * H); // Fri 20:00 to Mon 02:00
+    expect(weekdayMs(new Date("2026-10-24T00:00:00Z"), new Date("2026-10-26T00:00:00Z"))).toBe(0);
+    expect(weekdayMs(new Date("2026-10-19T00:00:00Z"), new Date("2026-10-26T00:00:00Z"))).toBe(120 * H);
+  });
+
+  it("expects 20% a weekday and nothing on the weekend", () => {
+    expect(expectedUsed(wednesday, new Date("2026-10-21T13:00:00Z"))).toBe(0);
+    expect(expectedUsed(wednesday, new Date("2026-10-22T13:00:00Z"))).toBe(20);
+    expect(expectedUsed(wednesday, new Date("2026-10-23T22:00:00Z"))).toBe(47.5); // Friday 22:00: 57 of 120 hours
+    const saturday = expectedUsed(wednesday, new Date("2026-10-24T00:00:00Z")); // 59 of 120 hours
+    expect(expectedUsed(wednesday, new Date("2026-10-25T23:59:00Z"))).toBe(saturday); // flat over the weekend
+    expect(saturday).toBeCloseTo(49.17, 2);
+    expect(expectedUsed(wednesday, new Date("2026-10-27T13:00:00Z"))).toBe(80);
+    expect(expectedUsed(wednesday, wednesday)).toBe(100);
+    // A window that opens on Saturday expects nothing until Monday.
+    expect(expectedUsed(new Date("2026-10-31T16:00:00Z"), new Date("2026-10-25T20:00:00Z"))).toBe(0);
+  });
+
+  it("is the pool's usage against that even pace, and null when nothing is expected yet", () => {
+    const friday = new Date("2026-10-23T22:00:00Z"); // 47.5% expected of the Wednesday window
+    expect(poolPace([{ used: 34, resetsAt: wednesday }], 1, friday)).toEqual({
+      seven_day_expected: 48,
+      seven_day_pace: 72,
+    });
+    expect(poolPace([{ used: 47.5, resetsAt: wednesday }], 2, friday)).toEqual({
+      seven_day_expected: 24,
+      seven_day_pace: 100,
+    });
+    expect(poolPace([{ used: 0, resetsAt: new Date("2026-10-31T16:00:00Z") }], 1, friday)).toEqual({
+      seven_day_expected: 0,
+      seven_day_pace: null,
+    });
+    expect(poolPace([], 0, friday)).toEqual({ seven_day_expected: 0, seven_day_pace: null });
+  });
+
+  it("takes a window's highest reading over idle sessions that keep posting old ones, and rolls a reset window forward", async () => {
+    const t = setupApp(db);
+    const session = await t.signIn("pace1@example.com");
+    const me = (await (await t.call("/me", { session })).json()) as { org: { id: string } };
+    const orgId = me.org.id;
+    const [owner] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = $1`, ["pace1@example.com"]);
+    const other = uuidv7();
+    await db.query(`INSERT INTO sesh.users (id, name, email) VALUES ($1, 'pace1b', 'pace1b@example.com')`, [other]);
+    await db.query(
+      `INSERT INTO sesh.org_members (org_id, user_id, role, counts_toward_team) VALUES ($1, $2, 'member', true)`,
+      [orgId, other],
+    );
+    const read = (userId: string, sessionId: string, pct: number, resets: string, at: string) =>
+      storeLimitSnapshot(
+        db,
+        { orgId, userId },
+        {
+          sessionId,
+          fiveHourPct: null,
+          fiveHourResetsAt: null,
+          sevenDayPct: pct,
+          sevenDayResetsAt: new Date(resets),
+          capturedAt: new Date(at),
+        },
+      );
+    // The owner's busy session reached 34%; an idle one keeps posting the 11% it saw first, and posted last.
+    await read(owner!.id, "busy", 34, "2026-10-28T13:00:00Z", "2026-10-23T18:00:00Z");
+    await read(owner!.id, "idle", 11, "2026-10-28T13:00:00Z", "2026-10-25T18:00:00Z");
+    // The other member's window reset Saturday 16:00 and they haven't reported since: a new window, 0% used.
+    await read(other, "old", 18, "2026-10-24T16:00:00Z", "2026-10-23T21:00:00Z");
+
+    const now = new Date("2026-10-26T03:00:00Z"); // Monday 03:00 UTC: 62 of the owner's 120 weekday hours, 3 of the other's
+    const pool = await planPool(db, orgId, now);
+    expect(pool).toEqual({
+      members: 2,
+      five_hour_used: 0,
+      seven_day_used: 17, // 34 / 2
+      five_hour_reporting: 0,
+      seven_day_reporting: 1,
+      seven_day_expected: 27, // (51.67 + 2.5) / 2
+      seven_day_pace: 63, // 34 / 54.17
     });
   });
 });

@@ -25,6 +25,8 @@ interface Pool {
   seven_day_used: number;
   five_hour_reporting: number;
   seven_day_reporting: number;
+  seven_day_expected: number;
+  seven_day_pace: number | null;
 }
 
 /** A session above this share of the day is the page's one highlight. */
@@ -104,7 +106,9 @@ export function Home({ orgName }: { orgName: string }) {
                 <h2>How much of the plan the team has used</h2>
                 <p className="muted">
                   Every member&apos;s plan window goes into one pool, each an equal share. A member who hasn&apos;t
-                  reported counts as 0% used. Higher is closer to the limit.
+                  reported counts as 0% used. Higher is closer to the limit. Pace compares the 7 day pool with using it
+                  all by each reset at 20% a weekday and nothing on Saturday and Sunday (UTC): 100% is using the plan as
+                  fast as time passes.
                 </p>
               </div>
               <div className="figures big">
@@ -119,6 +123,11 @@ export function Home({ orgName }: { orgName: string }) {
                   value={`${pool.seven_day_used}%`}
                   hot={pool.seven_day_used >= POOL_HOT}
                   note={`of the team pool · ${pool.seven_day_reporting} of ${pool.members} members reporting`}
+                />
+                <Figure
+                  label="7 day pace"
+                  value={pool.seven_day_pace == null ? "—" : `${pool.seven_day_pace}%`}
+                  note={`of an even weekday pace · ${pool.seven_day_expected}% of the pool expected by now`}
                 />
               </div>
             </section>
