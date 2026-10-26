@@ -57,7 +57,12 @@ function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
                 seven_day_reporting: 3,
               }
             : path === "/members"
-              ? { members: [{ name: "Ada", role: "owner" }] }
+              ? {
+                  members: [
+                    { name: "Ada", role: "owner", counts_toward_team: true, you: true },
+                    { name: "Sam", role: "member", counts_toward_team: false, you: false },
+                  ],
+                }
               : path === "/tokens"
                 ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
                 : {};
@@ -174,6 +179,18 @@ describe("signed-in pages", () => {
     expect(text()).toContain("Ada");
     expect(text()).not.toContain("token of alpha");
 
+    const rows = [...container.querySelectorAll("tbody tr")];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.textContent).toContain("you");
+    expect(rows[1]!.textContent).not.toContain("you");
+    const boxes = [...container.querySelectorAll<HTMLInputElement>("tbody input[type=checkbox]")];
+    expect(boxes.map((b) => [b.checked, b.disabled, b.getAttribute("aria-label")])).toEqual([
+      [true, false, "Ada counts toward the team"],
+      [false, true, "Sam does not count toward the team"],
+    ]);
+    expect(text()).toContain("You can change only your own.");
+    expect(text()).toContain("Invite by email");
+
     const switchTo = async (id: string) => {
       const select = container.querySelector("select")!;
       await act(async () => {
@@ -188,6 +205,17 @@ describe("signed-in pages", () => {
     expect(container.querySelectorAll(".tab[aria-current]")).toHaveLength(1);
     expect(container.textContent).not.toContain("Send invite"); // beta: a member, not an owner
     expect(consoleError).not.toHaveBeenCalled(); // no duplicate-key warnings
+  });
+
+  it("saves your own Counts box at once and says so", async () => {
+    const fetchMock = fakeApi();
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => root.render(membersPage()));
+    const own = container.querySelector<HTMLInputElement>("tbody input[type=checkbox]")!;
+    await act(async () => own.click());
+    const post = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/membership"))!;
+    expect(JSON.parse(post[1]!.body as string)).toEqual({ counts_toward_team: false });
+    expect(container.querySelector(".notice")!.textContent).toContain("You're an observer in alpha.");
   });
 
   it("puts the tokens and the env snippet on the Tokens tab, with the observer state", async () => {
