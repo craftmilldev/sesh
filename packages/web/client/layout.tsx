@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
+import { OrgSwitcher } from "./org-switcher.js";
 import { api, ApiError, clearSession, getToken } from "./session.js";
 
 export interface Org {
@@ -30,10 +31,12 @@ function signOut() {
 export function Chrome({
   current,
   me,
+  reload,
   children,
 }: {
   current?: "sessions" | "members" | "tokens" | "login";
   me?: Me;
+  reload?: () => Promise<void>;
   children?: ReactNode;
 }) {
   return (
@@ -65,9 +68,10 @@ export function Chrome({
           )}
           <span className="nav-spacer" />
           {me && (
-            <span className="who">
-              {me.org.name} · {me.user.name}
-            </span>
+            <>
+              {reload && <OrgSwitcher orgs={me.orgs} current={me.org} reload={reload} />}
+              <span className="who">{me.user.name}</span>
+            </>
           )}
           {getToken() ? (
             <button type="button" className="nav-button" onClick={signOut}>
@@ -110,7 +114,7 @@ export function Page({
 
   if (!me) return <Chrome current={current}>{error && <p className="error">{error}</p>}</Chrome>;
   return (
-    <Chrome current={current} me={me}>
+    <Chrome current={current} me={me} reload={reload}>
       <Fragment key={me.org.id}>{children({ me, reload })}</Fragment>
     </Chrome>
   );

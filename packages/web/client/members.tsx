@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { message, type Me, type Org } from "./layout.js";
-import { api, saveOrg } from "./session.js";
+import { message, type Me } from "./layout.js";
+import { api } from "./session.js";
 
 interface Member {
   name: string;
@@ -43,30 +43,9 @@ function Field(props: {
   );
 }
 
-function SwitchOrg({ orgs, active, onSwitch }: { orgs: Org[]; active: string; onSwitch: (id: string) => void }) {
-  const [picked, setPicked] = useState(active);
-  return (
-    <div className="form">
-      <label>
-        Switch org
-        <select value={picked} onChange={(e) => setPicked(e.target.value)}>
-          {orgs.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <button type="button" onClick={() => onSwitch(picked)}>
-        Switch
-      </button>
-    </div>
-  );
-}
-
-/** Members: who is in the org, the invite, and (for now) the org switch and New org forms. */
+/** Members: who is in the org, and the invite. */
 export function Members({ me, reload }: { me: Me; reload: () => Promise<void> }) {
-  const { org, orgs } = me;
+  const { org } = me;
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
   const [members, setMembers] = useState<Member[]>([]);
 
@@ -150,30 +129,6 @@ export function Members({ me, reload }: { me: Me; reload: () => Promise<void> })
             <p className="muted">The link works once and lasts seven days.</p>
           </>
         )}
-        {orgs.length > 1 && (
-          <SwitchOrg
-            orgs={orgs}
-            active={org.id}
-            onSwitch={(id) =>
-              void act(async () => {
-                await api("/orgs/switch", { body: { org: id } });
-                saveOrg(id);
-              })
-            }
-          />
-        )}
-        <Field
-          label="New org"
-          button="Create"
-          type="text"
-          max={80}
-          onSubmit={(name) =>
-            act(async () => {
-              const r = await api<{ org: { id: string } }>("/orgs", { body: { name } });
-              saveOrg(r.org.id);
-            })
-          }
-        />
       </section>
     </>
   );
