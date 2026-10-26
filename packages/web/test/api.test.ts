@@ -325,6 +325,17 @@ describe("orgs", () => {
 
     expect((await me(t, owner)).org).toMatchObject({ counts_toward_team: true });
     expect((await me(t, session)).org).toMatchObject({ counts_toward_team: false });
+    const roster = async (who: Session) =>
+      ((await (await t.call("/members", { session: who })).json()) as { members: { role: string; you: boolean }[] })
+        .members;
+    expect((await roster(owner)).map((m) => [m.role, m.you])).toEqual([
+      ["owner", true],
+      ["member", false],
+    ]);
+    expect((await roster(session)).map((m) => [m.role, m.you])).toEqual([
+      ["owner", false],
+      ["member", true],
+    ]);
     const blocked = await t.call("/tokens", { body: { name: "laptop" }, session });
     expect(blocked.status).toBe(403);
     expect(await blocked.json()).toMatchObject({ error: "observer" });

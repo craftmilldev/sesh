@@ -274,11 +274,11 @@ export function createApp(opts: AppOptions) {
     });
   });
 
-  // The org's members, by name and role.
+  // The org's members, by name and role, with `you` on the signed-in user's row.
   scoped.get("/members", async (c) => {
     const { user, org } = c.var;
     await metrics.capture("members_viewed", user.id);
-    return c.json({ members: await store.listMembers(await opts.getDb(), org.id) });
+    return c.json({ members: await store.listMembers(await opts.getDb(), org.id, user.id) });
   });
 
   // One session with its prompts and events. A session of another org is a 404, the same as one that doesn't exist.
