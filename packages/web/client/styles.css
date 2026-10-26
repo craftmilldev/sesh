@@ -691,3 +691,93 @@ code {
 .signin h1 {
   margin-bottom: 20px;
 }
+
+/* The header's org switcher: a button for the current org and a menu of orgs with New org under them. */
+.org-switch {
+  position: relative;
+}
+.org-switch-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-sm);
+  padding: 0 10px;
+  border: 1px solid var(--rule-soft);
+  background: var(--paper-100);
+  color: var(--ink-900);
+  font: 12px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.org-switch-button:hover:not(:disabled),
+.org-switch-button[aria-expanded="true"] {
+  border-color: var(--ink-900);
+  background: var(--paper-100);
+}
+.org-switch-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--ink-900);
+  background: var(--paper-100);
+  box-shadow: 3px 3px 0 var(--ink-900);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.org-switch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--control-lg);
+  padding: 4px 12px;
+  background: none;
+  color: var(--ink-900);
+  text-align: left;
+}
+.org-switch-item:hover:not(:disabled),
+.org-switch-item:focus-visible {
+  background: var(--paper-200);
+  outline: 0;
+}
+.org-switch-check {
+  width: 14px;
+  color: var(--madder);
+  font: 13px var(--mono);
+}
+.org-switch-org {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font: 18px/1.2 var(--serif);
+}
+.org-switch-role {
+  font: 11px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-500);
+}
+.org-switch-new {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--rule-hair);
+}
+.org-switch-new label {
+  flex: 1 1 140px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.org-switch-new label input {
+  margin-top: 4px;
+}
+.org-switch-list .error {
+  margin: 0;
+  padding: 0 12px 12px;
+  font-size: 14px;
+}

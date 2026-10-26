@@ -11,10 +11,12 @@ import { Tokens } from "../client/tokens.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const orgs = [
+const baseOrgs = [
   { id: "o1", name: "alpha", role: "owner", counts_toward_team: true },
   { id: "o2", name: "beta", role: "member", counts_toward_team: true },
 ];
+
+let orgs = [...baseOrgs];
 
 /** A fake API where /me reports whichever org the last switch chose. */
 function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
@@ -22,6 +24,16 @@ function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
   const sessions = opts.sessions ?? 3;
   return vi.fn(async (url: string, init?: RequestInit) => {
     const path = url.replace(/^\/api/, "").split("?")[0];
+    if (path === "/orgs") {
+      orgs.push({
+        id: "o3",
+        name: (JSON.parse(init?.body as string) as { name: string }).name,
+        role: "owner",
+        counts_toward_team: true,
+      });
+      active = orgs[2]!;
+      return new Response(JSON.stringify({ org: active }), { status: 201 });
+    }
     if (path === "/orgs/switch")
       active = orgs.find((o) => o.id === (JSON.parse(init?.body as string) as { org: string }).org)!;
     const body =
@@ -76,6 +88,7 @@ describe("signed-in pages", () => {
   let consoleError: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    orgs = baseOrgs.map((o) => ({ ...o }));
     localStorage.setItem("sesh_session", "tok");
     consoleError = vi.fn();
     vi.stubGlobal("console", { ...console, error: consoleError });
@@ -95,7 +108,7 @@ describe("signed-in pages", () => {
   const membersPage = () => <Page current="members">{(ctx) => <Members {...ctx} />}</Page>;
   const tokensPage = () => <Page current="tokens">{({ me }) => <Tokens me={me} />}</Page>;
 
-  it("draws the same masthead and footer, with the current tab marked and no role or org switcher", async () => {
+  it("draws the same masthead and footer, with the current tab marked and the org switcher before the name", async () => {
     vi.stubGlobal("fetch", fakeApi());
     await act(async () => root.render(sessionsPage()));
     expect(container.querySelector(".wordmark")!.getAttribute("href")).toBe("/app");
@@ -103,7 +116,8 @@ describe("signed-in pages", () => {
     const tabs = [...container.querySelectorAll(".tab")];
     expect(tabs.map((a) => a.getAttribute("href"))).toEqual(["/app", "/app/members", "/app/tokens"]);
     expect(tabs.map((a) => a.getAttribute("aria-current"))).toEqual(["page", null, null]);
-    expect(container.querySelector(".who")!.textContent).toBe("alpha · Ada");
+    expect(container.querySelector(".who")!.textContent).toBe("Ada");
+    expect(container.querySelector(".org-switch-button")!.textContent).toBe("alpha");
     expect(container.querySelector("select")).toBeNull();
     expect(container.querySelector(".nav-button")!.textContent).toBe("Sign out");
     expect(container.querySelector(".footer")!.textContent).toBe("Sesh · Craftmill · Plumbline LLC, Maine");
@@ -168,7 +182,7 @@ describe("signed-in pages", () => {
     expect(container.querySelector("table")).toBeNull();
   });
 
-  it("puts members and the org forms on the Members tab, once per org after each switch", async () => {
+  it("puts members on the Members tab, once per org after each switch", async () => {
     vi.stubGlobal("fetch", fakeApi());
     await act(async () => root.render(membersPage()));
     const eyebrow = () => container.querySelector(".eyebrow")!.textContent;
@@ -191,16 +205,14 @@ describe("signed-in pages", () => {
     expect(text()).toContain("You can change only your own.");
     expect(text()).toContain("Invite by email");
 
-    const switchTo = async (id: string) => {
-      const select = container.querySelector("select")!;
-      await act(async () => {
-        select.value = id;
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      });
-      const button = [...container.querySelectorAll("button")].find((b) => b.textContent === "Switch")!;
-      await act(async () => button.click());
+    const switchTo = async (name: string) => {
+      await act(async () => container.querySelector<HTMLElement>(".org-switch-button")!.click());
+      const item = [...container.querySelectorAll<HTMLElement>("[role=menuitem]")].find((i) =>
+        i.textContent?.includes(name),
+      )!;
+      await act(async () => item.click());
     };
-    await switchTo("o2");
+    await switchTo("beta");
     expect(eyebrow()).toBe("beta · Member");
     expect(container.querySelectorAll(".tab[aria-current]")).toHaveLength(1);
     expect(container.textContent).not.toContain("Send invite"); // beta: a member, not an owner
@@ -255,5 +267,89 @@ describe("signed-in pages", () => {
     expect(replace).not.toHaveBeenCalled();
     await act(async () => root.render(page("/app/settings")));
     expect(replace).toHaveBeenCalledWith("/app/members");
+  });
+
+  describe("org switcher", () => {
+    const button = () => container.querySelector<HTMLButtonElement>(".org-switch-button")!;
+    const items = () => [...container.querySelectorAll<HTMLElement>("[role=menuitem]")];
+    const key = (el: Element, k: string) =>
+      act(async () => void el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })));
+
+    async function open() {
+      vi.stubGlobal("fetch", fakeApi());
+      await act(async () => root.render(sessionsPage()));
+      await act(async () => button().click());
+    }
+
+    it("lists every org with its role, marks the current one and focuses it", async () => {
+      await open();
+      expect(button().getAttribute("aria-label")).toBe("Org: alpha. Switch org");
+      expect(button().getAttribute("aria-expanded")).toBe("true");
+      expect(container.querySelector("[role=menu]")).not.toBeNull();
+      expect(items().map((i) => i.textContent)).toEqual(["✓alphaowner", "betamember"]);
+      expect(items().map((i) => i.getAttribute("aria-current"))).toEqual(["page", null]);
+      expect(document.activeElement).toBe(items()[0]);
+    });
+
+    it("shows the switcher with a single org", async () => {
+      vi.stubGlobal("fetch", fakeApi());
+      orgs = [orgs[0]!];
+      await act(async () => root.render(sessionsPage()));
+      expect(button().textContent).toBe("alpha");
+    });
+
+    it("moves with the arrow, Home and End keys, and closes on Escape with focus back on the button", async () => {
+      await open();
+      await key(items()[0]!, "ArrowDown");
+      expect(document.activeElement).toBe(items()[1]);
+      await key(items()[1]!, "Home");
+      expect(document.activeElement).toBe(items()[0]);
+      await key(items()[0]!, "End");
+      expect(document.activeElement).toBe(items()[1]);
+      await key(items()[1]!, "ArrowDown"); // past the last org: the New org input
+      expect(document.activeElement).toBe(container.querySelector("input"));
+      await key(container.querySelector("input")!, "ArrowUp");
+      expect(document.activeElement).toBe(items()[1]);
+      await key(items()[1]!, "Escape");
+      expect(container.querySelector("[role=menu]")).toBeNull();
+      expect(document.activeElement).toBe(button());
+    });
+
+    it("closes on Tab and on a mousedown outside", async () => {
+      await open();
+      await key(items()[0]!, "Tab");
+      expect(container.querySelector("[role=menu]")).toBeNull();
+      await act(async () => button().click());
+      await act(async () => void document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+      expect(container.querySelector("[role=menu]")).toBeNull();
+    });
+
+    it("switches org from the menu, remembers it and reloads the page", async () => {
+      await open();
+      await act(async () => items()[1]!.click());
+      expect(localStorage.getItem("sesh_org")).toBe("o2");
+      expect(button().textContent).toBe("beta");
+      expect(container.querySelector("[role=menu]")).toBeNull();
+    });
+
+    it("creates an org from the menu and switches to it", async () => {
+      await open();
+      const input = container.querySelector("input")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "gamma");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(input.maxLength).toBe(80);
+      await act(async () => container.querySelector<HTMLButtonElement>(".org-switch-new button")!.click());
+      expect(localStorage.getItem("sesh_org")).toBe("o3");
+      expect(button().textContent).toBe("gamma");
+    });
+
+    it("has no switch or New org form on the Members page any more", async () => {
+      vi.stubGlobal("fetch", fakeApi());
+      await act(async () => root.render(membersPage()));
+      expect(container.querySelector("main select")).toBeNull();
+      expect(container.querySelector("main")!.textContent).not.toContain("New org");
+    });
   });
 });
