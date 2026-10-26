@@ -274,32 +274,76 @@ export interface UserLimits {
   user_name: string;
   five_hour_pct: number | null;
   seven_day_pct: number | null;
+  /** When the member's current 7 day window ends; null when they have never reported one. */
+  seven_day_resets_at: Date | null;
   captured_at: Date;
 }
 
+const DAY_MS = 86_400_000;
+const WEEK_MS = 7 * DAY_MS;
+
 /**
- * Each member's current plan usage: their latest snapshot, where a window that has already reset
- * (its resets_at is past) counts as unknown rather than showing a stale percentage.
+ * Each member's current plan usage. An idle session's status line keeps posting the last reading it saw, so the
+ * latest snapshot can be stale; usage only rises until the window resets, so a window's usage is its highest
+ * reading. A window that has already reset (its resets_at is past) counts as unknown. A 7 day window resets at
+ * the same time each week, so a past reset is rolled forward by whole weeks to give the current window's end.
  */
-export async function currentLimits(db: Db, orgId: string): Promise<UserLimits[]> {
+export async function currentLimits(db: Db, orgId: string, now = new Date()): Promise<UserLimits[]> {
   const rows = await db.query<{
     user_name: string;
     five_hour_pct: number | null;
     seven_day_pct: number | null;
+    seven_day_resets_at: Date | null;
     captured_at: Date;
   }>(
     `SELECT u.name AS user_name,
-            CASE WHEN l.five_hour_resets_at > now() THEN l.five_hour_pct END AS five_hour_pct,
-            CASE WHEN l.seven_day_resets_at > now() THEN l.seven_day_pct END AS seven_day_pct,
-            l.captured_at
+            max(l.five_hour_pct) FILTER (WHERE l.five_hour_resets_at > $2) AS five_hour_pct,
+            max(l.seven_day_pct) FILTER (WHERE l.seven_day_resets_at > $2) AS seven_day_pct,
+            max(l.seven_day_resets_at) AS seven_day_resets_at,
+            max(l.captured_at) AS captured_at
      FROM sesh.users u
-     JOIN LATERAL (
-       SELECT * FROM sesh.limit_snapshots WHERE org_id = $1 AND user_id = u.id ORDER BY captured_at DESC LIMIT 1
-     ) l ON true
+     JOIN sesh.limit_snapshots l ON l.user_id = u.id
+     WHERE l.org_id = $1 AND l.captured_at > $2::timestamptz - interval '28 days'
+     GROUP BY u.id, u.name
      ORDER BY u.name, u.id`,
-    [orgId],
+    [orgId, now],
   );
-  return rows.map((r) => ({ ...r, captured_at: new Date(r.captured_at) }));
+  return rows.map((r) => {
+    let resets = r.seven_day_resets_at == null ? null : new Date(r.seven_day_resets_at).getTime();
+    if (resets != null && resets <= now.getTime())
+      resets += Math.ceil((now.getTime() - resets + 1) / WEEK_MS) * WEEK_MS;
+    return {
+      ...r,
+      five_hour_pct: r.five_hour_pct == null ? null : Number(r.five_hour_pct),
+      seven_day_pct: r.seven_day_pct == null ? null : Number(r.seven_day_pct),
+      seven_day_resets_at: resets == null ? null : new Date(resets),
+      captured_at: new Date(r.captured_at),
+    };
+  });
+}
+
+/** Milliseconds of weekday (Monday to Friday, UTC) time from `from` to `to`. */
+export function weekdayMs(from: Date, to: Date): number {
+  let ms = 0;
+  for (let t = from.getTime(); t < to.getTime();) {
+    const d = new Date(t);
+    const end = Math.min(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1), to.getTime());
+    if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) ms += end - t;
+    t = end;
+  }
+  return ms;
+}
+
+/**
+ * How much of a 7 day window (percent) should be used by `now` to use all of it by the reset, at an even pace
+ * over its weekdays and nothing on Saturday and Sunday (UTC). Every 7 day window holds exactly 5 weekdays, so
+ * this is 20% a weekday, flat over the weekend.
+ */
+export function expectedUsed(resetsAt: Date, now: Date): number {
+  const start = new Date(resetsAt.getTime() - WEEK_MS);
+  if (now <= start) return 0;
+  if (now >= resetsAt) return 100;
+  return (100 * weekdayMs(start, now)) / (5 * DAY_MS);
 }
 
 /** An org's members, owners first. */
@@ -317,7 +361,13 @@ export interface PlanPool {
   seven_day_used: number;
   five_hour_reporting: number;
   seven_day_reporting: number;
+  /** The share of the 7 day pool that would be used by now at 20% a weekday (see expectedUsed). */
+  seven_day_expected: number;
+  /** 7 day usage against that even pace, percent (100 is right on pace); null when nothing is expected yet. */
+  seven_day_pace: number | null;
 }
+
+const clampPct = (u: number) => Math.min(100, Math.max(0, u));
 
 /**
  * The team's plan window as one pool: every member is an equal 1/N share of 100%, a member's share used is their
@@ -325,22 +375,39 @@ export interface PlanPool {
  */
 export function poolUsed(used: number[], members: number): number {
   if (members <= 0) return 0;
-  const sum = used.reduce((a, u) => a + Math.min(100, Math.max(0, u)), 0);
+  const sum = used.reduce((a, u) => a + clampPct(u), 0);
   return Math.round(sum / members);
 }
 
-export async function planPool(db: Db, orgId: string): Promise<PlanPool> {
+/**
+ * The team's 7 day pace: what members with a known window have used against what an even weekday pace would
+ * have them at by now. Members who have never reported have no known window and are left out.
+ */
+export function poolPace(windows: { used: number; resetsAt: Date }[], members: number, now: Date) {
+  const expected = windows.reduce((a, w) => a + expectedUsed(w.resetsAt, now), 0);
+  const used = windows.reduce((a, w) => a + clampPct(w.used), 0);
+  return {
+    seven_day_expected: members > 0 ? Math.round(expected / members) : 0,
+    seven_day_pace: expected > 0 ? Math.round((100 * used) / expected) : null,
+  };
+}
+
+export async function planPool(db: Db, orgId: string, now = new Date()): Promise<PlanPool> {
   const [row] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.org_members WHERE org_id = $1`, [orgId]);
   const members = Number(row!.n);
-  const limits = await currentLimits(db, orgId);
+  const limits = await currentLimits(db, orgId, now);
   const five = limits.map((l) => l.five_hour_pct).filter((v) => v != null);
   const seven = limits.map((l) => l.seven_day_pct).filter((v) => v != null);
+  const windows = limits.flatMap((l) =>
+    l.seven_day_resets_at ? [{ used: l.seven_day_pct ?? 0, resetsAt: l.seven_day_resets_at }] : [],
+  );
   return {
     members,
     five_hour_used: poolUsed(five, members),
     seven_day_used: poolUsed(seven, members),
     five_hour_reporting: five.length,
     seven_day_reporting: seven.length,
+    ...poolPace(windows, members, now),
   };
 }
 
