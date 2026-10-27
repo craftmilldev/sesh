@@ -12,7 +12,9 @@ export default defineConfig(
     languageOptions: {
       globals: globals.node,
       parserOptions: {
-        projectService: { allowDefaultProject: ["eslint.config.js", "packages/web/vitest.config.ts"] },
+        projectService: {
+          allowDefaultProject: ["eslint.config.js", "packages/web/vitest.config.ts", "packages/web/cli/sesh.mjs"],
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -20,7 +22,7 @@ export default defineConfig(
     rules: { "@typescript-eslint/require-await": "off" },
   },
   { files: ["packages/web/client/**"], languageOptions: { globals: globals.browser } },
-  { files: ["**/*.js"], extends: [tseslint.configs.disableTypeChecked] },
+  { files: ["**/*.js", "**/*.mjs"], extends: [tseslint.configs.disableTypeChecked] },
   // Last, so it turns off any rule that would fight Prettier's formatting.
   prettier,
 );

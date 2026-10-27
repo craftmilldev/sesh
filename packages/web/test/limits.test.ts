@@ -15,7 +15,7 @@ import {
   weekdayMs,
 } from "../src/store.js";
 import { uuidv7 } from "../src/ids.js";
-import { formatBar, parseInput, readConfig, reportable, target } from "../statusline/sesh-statusline.js";
+import { formatBar, parseInput, readConfig, reportable, target } from "../cli/sesh.mjs";
 import { type Session, setupApp } from "./harness.js";
 
 const input = readFileSync(new URL("./fixtures/statusline-input.json", import.meta.url), "utf8");

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { Hono } from "hono";
+import { createCliRoutes } from "./cli.js";
 import { ANONYMOUS, noopMetrics, type Metrics } from "./metrics.js";
 
 // The signed-in app is a React SPA in client/ that talks to the JSON API under /api on the same origin.
@@ -60,6 +61,7 @@ export function createWeb(opts: WebOptions = {}) {
   const app = new Hono();
   const metrics = opts.metrics ?? noopMetrics;
 
+  app.route("/", createCliRoutes({ metrics }));
   app.get("/", async (c) => {
     await metrics.capture("landing_viewed", ANONYMOUS);
     return c.html(SHELL, 200, SECURITY_HEADERS);
