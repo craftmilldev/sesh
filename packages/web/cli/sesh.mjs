@@ -419,10 +419,13 @@ async function statuslineOn({ replace = false } = {}) {
       return false;
     }
   }
-  try {
-    writeFileSync(`${file}.bak`, readFileSync(file));
-  } catch {
-    // no settings yet
+  // Only the user's own settings are worth keeping: a rerun must not replace that backup with one already changed.
+  if (!isSeshCommand(current)) {
+    try {
+      writeFileSync(`${file}.bak`, readFileSync(file));
+    } catch {
+      // no settings yet
+    }
   }
   mkdirSync(dirname(file), { recursive: true });
   let mode = 0o600;

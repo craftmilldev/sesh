@@ -10,13 +10,13 @@
 # server; `sesh config set auto_update off` stops that. Needs Node 22+.
 #
 # An existing status line that isn't sesh's is only replaced if you say so (or SESH_REPLACE=1).
-# Other settings: SESH_SERVER (where to download from), SESH_DIR (default ~/.sesh), SESH_BIN_DIR (default ~/.local/bin),
+# Other settings: SESH_SERVER (where to download from), SESH_STATE_DIR (default ~/.sesh), SESH_BIN_DIR (default ~/.local/bin),
 # CLAUDE_CONFIG_DIR (default ~/.claude).
 
 set -eu
 
 SERVER="${SESH_SERVER:-__SESH_SERVER__}"
-DIR="${SESH_DIR:-$HOME/.sesh}"
+DIR="${SESH_STATE_DIR:-$HOME/.sesh}"
 BIN_DIR="${SESH_BIN_DIR:-$HOME/.local/bin}"
 SCRIPT="$DIR/sesh.mjs"
 
