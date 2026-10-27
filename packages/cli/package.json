@@ -1,0 +1,20 @@
+{
+  "name": "@sesh/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The sesh command and Claude Code status line: one dependency-free Node file, served and self-updated from the sesh server.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "sync": "cp sesh.mjs ../web/cli/sesh.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.3"
+  }
+}

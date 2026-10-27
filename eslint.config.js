@@ -13,7 +13,13 @@ export default defineConfig(
       globals: globals.node,
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["eslint.config.js", "packages/web/vitest.config.ts", "packages/web/cli/sesh.mjs"],
+          allowDefaultProject: [
+            "eslint.config.js",
+            "packages/web/vitest.config.ts",
+            "packages/cli/sesh.mjs",
+            "packages/web/cli/sesh.mjs",
+            "packages/cli/vitest.config.ts",
+          ],
         },
         tsconfigRootDir: import.meta.dirname,
       },

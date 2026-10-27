@@ -5,11 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createCliRoutes } from "../src/cli.js";
-import { isSeshCommand, serverOrigin, updatesEnabled, VERSION } from "../cli/sesh.mjs";
+import {
+  formatBar,
+  isSeshCommand,
+  parseInput,
+  readConfig,
+  reportable,
+  serverOrigin,
+  target,
+  updatesEnabled,
+  VERSION,
+} from "../sesh.mjs";
 
 const run = promisify(execFile);
-const SOURCE = new URL("../cli/sesh.mjs", import.meta.url).pathname;
+const SOURCE = new URL("../sesh.mjs", import.meta.url).pathname;
 
 /** An installed sesh in a temp home: ~/.sesh/sesh.mjs and a Claude config dir, as `sesh` sees them. */
 function home(script = SOURCE) {
@@ -209,38 +218,66 @@ describe("updating", () => {
   });
 });
 
-describe("serving the CLI", () => {
-  const events: { event: string; properties?: Record<string, unknown> }[] = [];
-  const app = createCliRoutes({
-    metrics: { capture: async (event, _id, properties) => void events.push({ event, properties }) },
+const input = readFileSync(new URL("./fixtures/statusline-input.json", import.meta.url), "utf8");
+
+describe("status line script", () => {
+  it("keeps only the session id and limits from the captured input", () => {
+    const s = parseInput(input, new Date("2026-10-22T00:00:00Z"));
+    expect(s).toEqual({
+      session_id: "0f6c2f0e-3b2a-4a55-9d0e-6a7c0a1b2c3d",
+      five_hour_pct: 19,
+      five_hour_resets_at: 1792000000,
+      seven_day_pct: 8,
+      seven_day_resets_at: 1792400000,
+      captured_at: "2026-10-22T00:00:00.000Z",
+    });
+    expect(formatBar(s)).toBe("5h 19% | 7d 8%");
+    expect(reportable(s)).toBe(true);
   });
 
-  it("announces the version and hash of the file it serves, and counts who asked", async () => {
-    const info = (await (await app.request("/cli/version", { headers: { "x-sesh-cli-version": "0.0.1" } })).json()) as {
-      version: string;
-      sha256: string;
+  it("handles input without limits or that is not JSON", () => {
+    const none = parseInput('{"session_id":"x"}');
+    expect(formatBar(none)).toBe("5h n/a | 7d n/a");
+    expect(reportable(none)).toBe(false);
+    expect(parseInput("not json")).toBeNull();
+    expect(formatBar(null)).toBe("5h n/a | 7d n/a");
+    expect(reportable(null)).toBe(false);
+  });
+
+  it("posts where config.json says, unless SESH_URL and SESH_TOKEN say otherwise, then where the OTel export goes", () => {
+    const config = { url: "https://saved.test/v1/limits", token: "tok_saved" };
+    const otel = {
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test/",
+      OTEL_EXPORTER_OTLP_HEADERS: "x-other=1,Authorization=Bearer tok_otel",
     };
-    const body = Buffer.from(await (await app.request("/cli/sesh.mjs")).arrayBuffer());
-    expect(info.version).toBe(VERSION);
-    const { createHash } = await import("node:crypto");
-    expect(createHash("sha256").update(body).digest("hex")).toBe(info.sha256);
-    expect(events).toEqual([
-      { event: "cli_version_checked", properties: { from_version: "0.0.1", current: false } },
-      { event: "cli_downloaded", properties: { kind: "install", from_version: undefined, version: VERSION } },
-    ]);
+    expect(target(otel, config)).toEqual(config);
+    expect(target(otel, null)).toEqual({ url: "https://sesh.test/v1/limits", token: "tok_otel" });
+    expect(
+      target(
+        {
+          OTEL_EXPORTER_OTLP_ENDPOINT: "https://c.test/otel",
+          OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20t",
+        },
+        null,
+      ),
+    ).toEqual({ url: "https://c.test/otel/v1/limits", token: "t" });
+    expect(target({ ...otel, SESH_URL: "https://other.test", SESH_TOKEN: "tok_sesh" }, config)).toEqual({
+      url: "https://other.test/v1/limits",
+      token: "tok_sesh",
+    });
+    expect(target({ OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test" }, null)).toBeNull();
+    expect(target({}, null)).toBeNull();
   });
 
-  it("records a junk version header as unknown", async () => {
-    events.length = 0;
-    await app.request("/cli/sesh.mjs", { headers: { "x-sesh-cli-version": "evil<script>" } });
-    expect(events[0]?.properties).toMatchObject({ kind: "update", from_version: "unknown" });
-  });
-
-  it("serves install.sh pointed at the server it came from", async () => {
-    const res = await app.request("http://sesh.test/install.sh");
-    const text = await res.text();
-    expect(text).toContain('SERVER="${SESH_SERVER:-http://sesh.test}"');
-    expect(text).not.toContain("__SESH_SERVER__");
-    expect(events.at(-1)?.event).toBe("install_script_fetched");
+  it("reads config.json, and treats a missing or broken one as none", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sesh-config-"));
+    const file = join(dir, "config.json");
+    expect(readConfig(file)).toBeNull();
+    writeFileSync(file, JSON.stringify({ url: "https://saved.test/v1/limits", token: "tok_saved" }));
+    expect(readConfig(file)).toEqual({ url: "https://saved.test/v1/limits", token: "tok_saved" });
+    writeFileSync(file, JSON.stringify({ url: "not a url", token: "tok_saved" }));
+    expect(readConfig(file)).toBeNull();
+    writeFileSync(file, "{");
+    expect(readConfig(file)).toBeNull();
   });
 });

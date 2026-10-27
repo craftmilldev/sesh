@@ -35,7 +35,7 @@ newest first) and `/app/sessions/<id>` one session with its prompts and events. 
 connect Claude Code. The UI is in the Craftmill house style (paper, ink, ruled lines; Sorts Mill Goudy and Courier Prime,
 self-hosted under `public/fonts/` and served by `src/ui.ts`, so the CSP stays `style-src 'self'`).
 
-Plan usage comes from the Claude Code status line, not OTel. [`packages/web/cli/sesh.mjs`](packages/web/cli/sesh.mjs)
+Plan usage comes from the Claude Code status line, not OTel. [`packages/cli/sesh.mjs`](packages/cli/sesh.mjs)
 reads the status line JSON, prints `5h N% | 7d N%`, and at most once a minute posts the session id and the two windows'
 used percentage and reset time to `POST /v1/limits` (same bearer ingest token; 401 and nothing stored otherwise), which
 stores a `sesh.limit_snapshots` row. Everything else in the input is dropped. The post runs in a detached process with a
@@ -67,7 +67,7 @@ curl -fsSL https://sesh.craftmill.dev/install.sh | sh
 The server hosts the CLI itself (`GET /install.sh`, `GET /cli/sesh.mjs`, and `GET /cli/version` giving the version and
 sha256 of the file it serves), so the private repo stays private and the CLI matches the deployment it reports to.
 [`install.sh`](packages/web/content/install.sh) puts it at `~/.sesh/sesh.mjs`, links it as `~/.local/bin/sesh` and runs
-`sesh setup`. The CLI ([`packages/web/cli/sesh.mjs`](packages/web/cli/sesh.mjs), plain Node 22+, no dependencies) has:
+`sesh setup`. The CLI ([`packages/cli/sesh.mjs`](packages/cli/sesh.mjs), plain Node 22+, no dependencies) has:
 
 - `sesh status`: version, server, masked token, whether Claude Code's status line is sesh's, the last reading posted, auto-update, and whether the server is reachable and has a newer CLI.
 - `sesh setup [--replace] [--url <server> --token <token>]`: saves the endpoint and token to `config.json` (mode 600; from the OTel settings in the shell or `settings.json` `env`, or the flags), and sets `statusLine` in `~/.claude/settings.json` with a 60 second `refreshInterval` (the old file is kept as `settings.json.bak`). It won't replace a status line that isn't sesh's unless you say yes (or pass `--replace`, or set `SESH_REPLACE=1`).
@@ -79,8 +79,9 @@ An installed CLI (the file at `~/.sesh/sesh.mjs`, not a checkout) updates itself
 sha256 differs from its own, downloads `/cli/sesh.mjs`, checks the hash and that the file runs, swaps it in and runs the
 command again. The status line never waits on it: its detached background process does the check and the install
 quietly, so a status line alone keeps current. Turn it off with `sesh config set auto_update off` or `SESH_NO_UPDATE=1`.
-When you change the CLI, bump `VERSION` in the file so people see which version they have; the update itself follows
-the hash.
+The CLI is its own workspace, `packages/cli` (`@sesh/cli`, with its tests). Vercel uploads only `packages/web`, so the server serves a
+copy at `packages/web/cli/sesh.mjs`; after changing the CLI run `npm run sync -w @sesh/cli` (a web test fails if the copy differs)
+and bump `VERSION` in the file so people see which version they have; the update itself follows the hash.
 
 By hand: copy the script somewhere stable as `sesh.mjs`, put the `config.json` beside it
 (`{ "url": "https://<sesh>/v1/limits", "token": "<ingest token>" }`) and add to `~/.claude/settings.json`:
