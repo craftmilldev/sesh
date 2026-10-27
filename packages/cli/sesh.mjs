@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // sesh: the command line for sesh (session insights for Claude Code teams), and the Claude Code status line that
-// reports plan usage to it. Plain Node 22+, no dependencies, one file: the sesh server serves it at /cli/sesh.mjs
-// and install.sh puts it at ~/.sesh/sesh.mjs. An installed copy keeps itself current from the server it reports to.
+// reports plan usage to it. Plain Node 22+, no dependencies, one file: install.sh puts a GitHub release's
+// sesh.mjs at ~/.sesh/sesh.mjs, and an installed copy keeps itself current from the repo's releases.
 //
 //   sesh status              what is set up: server, token, status line, last reading, updates
 //   sesh setup               save the server and token, and make sesh Claude Code's status line
@@ -14,7 +14,6 @@
 // and SESH_TOKEN override that; the OTel variables are the last resort. It never fails or waits on the network: the
 // post, and any update, happen in a detached child.
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   createReadStream,
@@ -222,7 +221,7 @@ async function runBackground() {
   try {
     if (updatesEnabled()) {
       const latest = await latestCli({});
-      if (latest && latest.sha256 !== ownHash()) await installUpdate(latest);
+      if (newerThanThis(latest)) await installUpdate(latest);
     }
   } catch {
     // an update that fails is tried again at the next check
@@ -240,9 +239,22 @@ function saveLastReading(snapshot) {
 
 // --- updates ---------------------------------------------------------------------------------------------------
 
-const ownHash = () => createHash("sha256").update(readFileSync(SELF)).digest("hex");
+const REPO = "craftmilldev/sesh";
+// Releases come from GitHub (the repo is public), as loopway's do; tests point these at a local server.
+const apiUrl = (env = process.env) => env.SESH_API_URL || "https://api.github.com";
+const downloadUrl = (env = process.env) => env.SESH_DOWNLOAD_URL || "https://github.com";
 
-/** The server the CLI reports to and updates from: the one in config.json or SESH_URL, else sesh's own. */
+/** The version of the tag `cli-v<x.y.z>`, or undefined for any other tag. */
+export const releaseVersion = (tag) => /^cli-v(\d+\.\d+\.\d+)$/.exec(tag)?.[1];
+
+/** Whether version `a` is newer than `b`; both are x.y.z. */
+export function isNewer(a, b) {
+  const [x, y] = [a, b].map((v) => v.split(".").map(Number));
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+
+/** The server the CLI reports to: the one in config.json or SESH_URL, else sesh's own. */
 export function serverOrigin(env = process.env, config = target(env)) {
   try {
     return new URL(config?.url ?? env.SESH_URL ?? DEFAULT_SERVER).origin;
@@ -284,23 +296,23 @@ const lookupDue = (now = Date.now()) => {
 };
 
 /**
- * The newest CLI the server has, `{ version, sha256 }`, from the server or (within ten minutes of the last lookup)
- * from ~/.sesh/update-check.json. Null when it can't be found; a failed lookup is remembered as long as a good one.
+ * The newest release's version (`{ version }`), from GitHub or (within ten minutes of the last lookup) from
+ * ~/.sesh/update-check.json. Null when it can't be found (offline, rate limited); a failed lookup is remembered
+ * as long as a good one, so an offline machine doesn't wait on it every command.
  */
 async function latestCli({ force = false, fetchFn = fetch, now = Date.now() }) {
   const cached = readCheck();
   if (!force && cached && now - cached.checked_at < CHECK_TTL_MS) return cached.latest ?? null;
   let latest = null;
   try {
-    const res = await fetchFn(`${serverOrigin()}/cli/version`, {
-      headers: { "x-sesh-cli-version": VERSION },
+    // The repo's latest release is the CLI's only while release-cli.yml is the one thing that publishes releases here.
+    const res = await fetchFn(`${apiUrl()}/repos/${REPO}/releases/latest`, {
+      headers: { accept: "application/vnd.github+json", "user-agent": "sesh-cli" },
       signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
     });
     if (res.ok) {
-      const body = await res.json();
-      if (typeof body.version === "string" && /^[0-9a-f]{64}$/.test(body.sha256)) {
-        latest = { version: body.version, sha256: body.sha256 };
-      }
+      const version = releaseVersion((await res.json()).tag_name ?? "");
+      if (version) latest = { version };
     }
   } catch {
     // offline or slow
@@ -314,29 +326,27 @@ async function latestCli({ force = false, fetchFn = fetch, now = Date.now() }) {
   return latest;
 }
 
-/** Downloads the server's CLI and puts it over this one if it is the file `latest` describes and runs. Returns whether it did. */
+const newerThanThis = (latest) => !!latest && isNewer(latest.version, VERSION);
+
+/** Downloads release `latest` and puts it over this file if it runs and reports that version. */
 async function installUpdate(latest, fetchFn = fetch) {
-  const res = await fetchFn(`${serverOrigin()}/cli/sesh.mjs`, {
-    headers: { "x-sesh-cli-version": VERSION },
+  const res = await fetchFn(`${downloadUrl()}/${REPO}/releases/download/cli-v${latest.version}/sesh.mjs`, {
     signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`could not download the new version (${res.status})`);
-  const body = Buffer.from(await res.arrayBuffer());
-  if (createHash("sha256").update(body).digest("hex") !== latest.sha256) {
-    throw new Error("the download isn't the version the server announced");
-  }
   const tmp = join(dirname(SELF), `.sesh.${process.pid}.mjs`);
   try {
-    writeFileSync(tmp, body, { mode: 0o755 });
+    writeFileSync(tmp, Buffer.from(await res.arrayBuffer()), { mode: 0o755 });
     // A bad file must not replace a working one.
     const run = spawnSync(process.execPath, [tmp, "--version"], { encoding: "utf8", timeout: 10_000 });
-    if (run.status !== 0 || !/^\d+\.\d+\.\d+/.test(run.stdout)) throw new Error("the new version doesn't run");
+    if (run.status !== 0 || run.stdout.trim() !== latest.version) {
+      throw new Error(`the download isn't sesh ${latest.version}`);
+    }
     chmodSync(tmp, 0o755);
     renameSync(tmp, SELF);
   } finally {
     rmSync(tmp, { force: true });
   }
-  return true;
 }
 
 /** Before a command: installs a newer version if there is one, and runs the command again on it. Never blocks a command. */
@@ -344,7 +354,7 @@ async function updateBeforeCommand(argv) {
   if (process.env[UPDATED_ENV] || !updatesEnabled()) return;
   try {
     const latest = await latestCli({});
-    if (!latest || latest.sha256 === ownHash()) return;
+    if (!newerThanThis(latest)) return;
     console.error(`Updating sesh ${VERSION} → ${latest.version}…`);
     await installUpdate(latest);
   } catch (err) {
@@ -363,8 +373,9 @@ async function updateCommand() {
     throw new Error(`This sesh runs from ${SELF}, not the installed ~/.sesh/sesh.mjs, so it can't update itself.`);
   }
   const latest = await latestCli({ force: true });
-  if (!latest) throw new Error(`Could not reach ${serverOrigin()} to look for a new version.`);
-  if (latest.sha256 === ownHash()) return void console.log(`sesh ${VERSION} is the newest version.`);
+  if (!latest)
+    throw new Error("Could not find the latest sesh release (offline or rate limited by GitHub). Try again later.");
+  if (!newerThanThis(latest)) return void console.log(`sesh ${VERSION} is the newest version.`);
   await installUpdate(latest);
   console.log(`sesh ${latest.version} installed.`);
 }
@@ -495,7 +506,7 @@ async function statusCommand() {
     line("reachable", "no");
   }
   const latest = await latestCli({ force: true });
-  if (latest) line("newest", latest.sha256 === ownHash() ? "this is it" : `${latest.version} (run \`sesh update\`)`);
+  if (latest) line("newest", newerThanThis(latest) ? `${latest.version} (run \`sesh update\`)` : "this is it");
 }
 
 /** Flags of the form `--name value` and `--name`, and the plain words. */

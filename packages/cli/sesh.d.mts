@@ -29,3 +29,7 @@ export function updatesEnabled(
 /** Whether a status line command is sesh's. */
 export function isSeshCommand(command: string): boolean;
 export function main(argv: string[]): Promise<void>;
+/** The version of a `cli-v<x.y.z>` release tag, or undefined for any other tag. */
+export function releaseVersion(tag: string): string | undefined;
+/** Whether version `a` is newer than `b`; both are x.y.z. */
+export function isNewer(a: string, b: string): boolean;

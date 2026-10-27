@@ -1,21 +1,23 @@
 #!/bin/sh
 # Installs the sesh command and its Claude Code status line:
 #
-#   curl -fsSL __SESH_SERVER__/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/craftmilldev/sesh/main/install.sh | sh
 #
-# It downloads the CLI from the sesh server to ~/.sesh/sesh.mjs, links it as `sesh` in ~/.local/bin, and runs
+# It downloads the latest release of the CLI from GitHub to ~/.sesh/sesh.mjs, links it as `sesh` in ~/.local/bin, and runs
 # `sesh setup`, which saves the server and token from your OTel export settings (the OTEL_* env vars from sesh's
 # tokens page, in your shell or Claude Code's settings.json) and makes sesh Claude Code's status line. Set those up
-# first, or run `sesh setup --url <server> --token <token>` afterwards. The installed CLI updates itself from the
-# server; `sesh config set auto_update off` stops that. Needs Node 22+.
+# first, or run `sesh setup --url <server> --token <token>` afterwards. The installed CLI updates itself from
+# the repo's releases; `sesh config set auto_update off` stops that. Needs Node 22+.
 #
 # An existing status line that isn't sesh's is only replaced if you say so (or SESH_REPLACE=1).
-# Other settings: SESH_SERVER (where to download from), SESH_STATE_DIR (default ~/.sesh), SESH_BIN_DIR (default ~/.local/bin),
+# Other settings: SESH_VERSION (a release to install instead of the latest), SESH_DOWNLOAD_URL (where releases are), SESH_STATE_DIR (default ~/.sesh), SESH_BIN_DIR (default ~/.local/bin),
 # CLAUDE_CONFIG_DIR (default ~/.claude).
 
 set -eu
 
-SERVER="${SESH_SERVER:-__SESH_SERVER__}"
+SESH_VERSION="${SESH_VERSION:-}" # e.g. 0.1.0, to install that release instead of the latest
+BASE="${SESH_DOWNLOAD_URL:-https://github.com/craftmilldev/sesh/releases}"
+if [ -n "$SESH_VERSION" ]; then URL="$BASE/download/cli-v${SESH_VERSION#v}"; else URL="$BASE/latest/download"; fi
 DIR="${SESH_STATE_DIR:-$HOME/.sesh}"
 BIN_DIR="${SESH_BIN_DIR:-$HOME/.local/bin}"
 SCRIPT="$DIR/sesh.mjs"
@@ -39,10 +41,10 @@ fi
 mkdir -p "$DIR" "$BIN_DIR"
 tmp="$DIR/.sesh.$$.mjs"
 trap 'rm -f "$tmp"' EXIT
-fetch "$SERVER/cli/sesh.mjs" "$tmp" || die "could not download $SERVER/cli/sesh.mjs"
+fetch "$URL/sesh.mjs" "$tmp" || die "could not download $URL/sesh.mjs"
 # A quick check that it is the CLI and not an error page.
 version="$("$NODE" "$tmp" --version 2>/dev/null)" || die "the downloaded file doesn't run under $("$NODE" --version)."
-case "$version" in [0-9]*.[0-9]*.[0-9]*) ;; *) die "$SERVER/cli/sesh.mjs doesn't look like the sesh CLI." ;; esac
+case "$version" in [0-9]*.[0-9]*.[0-9]*) ;; *) die "$URL/sesh.mjs doesn't look like the sesh CLI." ;; esac
 chmod 755 "$tmp"
 mv "$tmp" "$SCRIPT"
 say "Installed sesh $version at $SCRIPT"

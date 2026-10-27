@@ -4,12 +4,14 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   formatBar,
+  isNewer,
   isSeshCommand,
   parseInput,
   readConfig,
+  releaseVersion,
   reportable,
   serverOrigin,
   target,
@@ -21,7 +23,8 @@ const run = promisify(execFile);
 const SOURCE = new URL("../sesh.mjs", import.meta.url).pathname;
 
 /** An installed sesh in a temp home: ~/.sesh/sesh.mjs and a Claude config dir, as `sesh` sees them. */
-function home(script = SOURCE) {
+function home(extraEnv: Record<string, string> = {}) {
+  const script = SOURCE;
   const root = mkdtempSync(join(tmpdir(), "sesh-cli-"));
   const state = join(root, ".sesh");
   mkdirSync(state);
@@ -31,6 +34,7 @@ function home(script = SOURCE) {
     HOME: root,
     SESH_STATE_DIR: state,
     CLAUDE_CONFIG_DIR: join(root, ".claude"),
+    ...extraEnv,
   };
   const sesh = (...args: string[]) =>
     run(process.execPath, [join(state, "sesh.mjs"), ...args], { env }).then(
@@ -145,69 +149,88 @@ describe("updating", () => {
   let server: Server;
   let origin: string;
   let served: Buffer;
-  let sha256: string;
-  const hits: string[] = [];
+  let latestTag: string;
+  let hits: string[];
 
   beforeAll(async () => {
-    const { createHash } = await import("node:crypto");
-    served = Buffer.from(readFileSync(SOURCE, "utf8").replace(`VERSION = "${VERSION}"`, 'VERSION = "9.9.9"'));
-    sha256 = createHash("sha256").update(served).digest("hex");
     server = createServer((req, res) => {
-      hits.push(`${req.url} ${String(req.headers["x-sesh-cli-version"])}`);
-      if (req.url === "/cli/version") res.end(JSON.stringify({ version: "9.9.9", sha256 }));
-      else if (req.url === "/cli/sesh.mjs") res.end(served);
+      hits.push(req.url ?? "");
+      if (req.url === "/repos/craftmilldev/sesh/releases/latest") res.end(JSON.stringify({ tag_name: latestTag }));
+      else if (req.url === "/craftmilldev/sesh/releases/download/cli-v9.9.9/sesh.mjs") res.end(served);
       else res.writeHead(404).end();
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   });
   afterAll(() => void server.close());
+  beforeEach(() => {
+    hits = [];
+    latestTag = "cli-v9.9.9";
+    served = Buffer.from(readFileSync(SOURCE, "utf8").replace(`VERSION = "${VERSION}"`, 'VERSION = "9.9.9"'));
+  });
+  const installed = (extra: Record<string, string> = {}) =>
+    home({ SESH_API_URL: origin, SESH_DOWNLOAD_URL: origin, ...extra });
 
-  it("an installed copy installs the server's version before a command and runs the command on it", async () => {
-    const h = home();
-    writeFileSync(join(h.state, "config.json"), JSON.stringify({ url: `${origin}/v1/limits`, token: "tok_abcdefgh" }));
-    const out = await h.sesh("--version");
+  it("an installed copy installs the newest release before a command and runs the command on it", async () => {
+    const h = installed();
     // --version is answered without updating; any other command updates first
-    expect(out.stdout.trim()).toBe(VERSION);
+    expect((await h.sesh("--version")).stdout.trim()).toBe(VERSION);
     const status = await h.sesh("status");
     expect(status.stderr).toContain(`Updating sesh ${VERSION} → 9.9.9`);
     expect(status.stdout).toContain("sesh:         9.9.9");
     expect(readFileSync(join(h.state, "sesh.mjs"), "utf8")).toContain('VERSION = "9.9.9"');
-    expect(hits).toContain(`/cli/sesh.mjs ${VERSION}`);
+    // the lookup is remembered, so the next command doesn't ask again
+    hits.length = 0;
+    await h.sesh("status");
+    expect(hits).not.toContain("/repos/craftmilldev/sesh/releases/latest");
   });
 
-  it("does not update with auto_update off, or when it isn't the installed copy", async () => {
-    const h = home();
-    writeFileSync(join(h.state, "config.json"), JSON.stringify({ url: `${origin}/v1/limits`, token: "tok_abcdefgh" }));
-    writeFileSync(
-      join(h.state, "config.json"),
-      JSON.stringify({ url: `${origin}/v1/limits`, token: "tok_abcdefgh", auto_update: false }),
-    );
-    const status = await h.sesh("status");
-    expect(status.stderr).not.toContain("Updating");
-    expect(status.stdout).toContain(`sesh:         ${VERSION}`);
-    const checkout = await run(process.execPath, [SOURCE, "update"], {
-      env: { ...h.env, SESH_STATE_DIR: h.state },
-    }).catch((e: { stderr: string }) => e);
-    expect(checkout).toMatchObject({ stderr: expect.stringContaining("can't update itself") as string });
-  });
-
-  it("refuses a download that isn't the announced version and keeps the working copy", async () => {
-    const h = home();
-    writeFileSync(join(h.state, "config.json"), JSON.stringify({ url: `${origin}/v1/limits`, token: "tok_abcdefgh" }));
-    const real = served;
-    served = Buffer.from("console.log('evil')");
-    try {
+  it("does nothing when the newest release isn't newer, or isn't a CLI release", async () => {
+    for (const tag of [`cli-v${VERSION}`, "v99.0.0"]) {
+      latestTag = tag;
+      const h = installed();
       const status = await h.sesh("status");
-      expect(status.stderr).toContain("isn't the version the server announced");
+      expect(status.stderr).not.toContain("Updating");
       expect(status.stdout).toContain(`sesh:         ${VERSION}`);
-      expect(readFileSync(join(h.state, "sesh.mjs"), "utf8")).not.toContain("evil");
-    } finally {
-      served = real;
     }
   });
 
-  it("reads the server from config or SESH_URL, and updates only the installed copy", () => {
+  it("does not update with auto_update off, or when it isn't the installed copy", async () => {
+    const h = installed();
+    writeFileSync(join(h.state, "config.json"), JSON.stringify({ auto_update: false }));
+    const status = await h.sesh("status");
+    expect(status.stderr).not.toContain("Updating");
+    expect(status.stdout).toContain(`sesh:         ${VERSION}`);
+    const checkout = await run(process.execPath, [SOURCE, "update"], { env: h.env }).catch(
+      (e: { stderr: string }) => e,
+    );
+    expect(checkout).toMatchObject({ stderr: expect.stringContaining("can't update itself") as string });
+  });
+
+  it("keeps the working copy when the download isn't the release it names", async () => {
+    served = Buffer.from("console.log('evil')");
+    const h = installed();
+    const status = await h.sesh("status");
+    expect(status.stderr).toContain("isn't sesh 9.9.9");
+    expect(status.stdout).toContain(`sesh:         ${VERSION}`);
+    expect(readFileSync(join(h.state, "sesh.mjs"), "utf8")).not.toContain("evil");
+  });
+
+  it("sesh update installs now, whatever the cached lookup says", async () => {
+    latestTag = `cli-v${VERSION}`;
+    const h = installed({ SESH_NO_UPDATE: "1" });
+    expect((await h.sesh("update")).stdout).toContain("is the newest version");
+    latestTag = "cli-v9.9.9";
+    expect((await h.sesh("update")).stdout).toContain("sesh 9.9.9 installed");
+  });
+
+  it("compares versions and release tags, and finds the server from config or SESH_URL", () => {
+    expect(isNewer("0.2.0", "0.1.9")).toBe(true);
+    expect(isNewer("0.1.10", "0.1.9")).toBe(true);
+    expect(isNewer("0.1.0", "0.1.0")).toBe(false);
+    expect(isNewer("0.0.9", "0.1.0")).toBe(false);
+    expect(releaseVersion("cli-v1.2.3")).toBe("1.2.3");
+    expect(releaseVersion("v1.2.3")).toBeUndefined();
     expect(serverOrigin({}, { url: "https://a.test/v1/limits", token: "t" })).toBe("https://a.test");
     expect(serverOrigin({ SESH_URL: "https://b.test/x" }, null)).toBe("https://b.test");
     expect(serverOrigin({}, null)).toBe("https://sesh.craftmill.dev");

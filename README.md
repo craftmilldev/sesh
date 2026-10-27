@@ -61,12 +61,10 @@ override that, and the `OTEL_*` variables are used if they ever do arrive; with 
 OTel env vars from `/app/tokens` are set up, install the `sesh` command (which is also the status line) with:
 
 ```bash
-curl -fsSL https://sesh.craftmill.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/craftmilldev/sesh/main/install.sh | sh
 ```
 
-The server hosts the CLI itself (`GET /install.sh`, `GET /cli/sesh.mjs`, and `GET /cli/version` giving the version and
-sha256 of the file it serves), so the private repo stays private and the CLI matches the deployment it reports to.
-[`install.sh`](packages/web/content/install.sh) puts it at `~/.sesh/sesh.mjs`, links it as `~/.local/bin/sesh` and runs
+[`install.sh`](install.sh) downloads the latest GitHub release's `sesh.mjs` to `~/.sesh/sesh.mjs` (`SESH_VERSION=0.1.0` picks a release), links it as `~/.local/bin/sesh` and runs
 `sesh setup`. The CLI ([`packages/cli/sesh.mjs`](packages/cli/sesh.mjs), plain Node 22+, no dependencies) has:
 
 - `sesh status`: version, server, masked token, whether Claude Code's status line is sesh's, the last reading posted, auto-update, and whether the server is reachable and has a newer CLI.
@@ -74,14 +72,17 @@ sha256 of the file it serves), so the private repo stays private and the CLI mat
 - `sesh statusline on|off`: set or remove sesh's status line. With no argument it is the status line itself, which Claude Code runs.
 - `sesh config [set url|token|auto_update <value>]`, `sesh update`, `sesh --version`.
 
-An installed CLI (the file at `~/.sesh/sesh.mjs`, not a checkout) updates itself like loopway's: before a command it asks
-`/cli/version` (at most every 10 minutes, 3 second timeout, remembered in `update-check.json` even when it fails) and, if the
-sha256 differs from its own, downloads `/cli/sesh.mjs`, checks the hash and that the file runs, swaps it in and runs the
-command again. The status line never waits on it: its detached background process does the check and the install
-quietly, so a status line alone keeps current. Turn it off with `sesh config set auto_update off` or `SESH_NO_UPDATE=1`.
-The CLI is its own workspace, `packages/cli` (`@sesh/cli`, with its tests). Vercel uploads only `packages/web`, so the server serves a
-copy at `packages/web/cli/sesh.mjs`; after changing the CLI run `npm run sync -w @sesh/cli` (a web test fails if the copy differs)
-and bump `VERSION` in the file so people see which version they have; the update itself follows the hash.
+An installed CLI (the file at `~/.sesh/sesh.mjs`, not a checkout) updates itself the way loopway's does: before a command it
+asks GitHub for the repo's latest release (`cli-v<x.y.z>`; at most every 10 minutes, 3 second timeout, remembered in
+`update-check.json` even when it fails) and, if that is newer, downloads the release's `sesh.mjs`, checks that it runs
+and reports that version, swaps it in and runs the command again. The status line never waits on it: its detached
+background process does the check and the install quietly, so a status line alone keeps current. Turn it off with
+`sesh config set auto_update off` or `SESH_NO_UPDATE=1`.
+
+The CLI is its own workspace, `packages/cli` (`@sesh/cli`, with its tests). `.github/workflows/release-cli.yml` releases it
+when CI passes on `main` and `packages/cli` changed: the next patch after the last `cli-v*` tag (raise `version` in
+`packages/cli/package.json` for a minor or major), with that version written into `sesh.mjs`'s `VERSION`. The file in the
+repo carries a placeholder `VERSION`.
 
 By hand: copy the script somewhere stable as `sesh.mjs`, put the `config.json` beside it
 (`{ "url": "https://<sesh>/v1/limits", "token": "<ingest token>" }`) and add to `~/.claude/settings.json`:
