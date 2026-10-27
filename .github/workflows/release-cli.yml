@@ -1,0 +1,91 @@
+name: Release CLI
+
+# Releases the sesh CLI (packages/cli/sesh.mjs) once CI passes on main, if the CLI has changed since the last release.
+# The version is the next patch after the last `cli-v*` tag, or packages/cli/package.json's version when that is
+# higher (or when there is no tag yet), so a minor or major bump is made by raising it there. The release carries
+# sesh.mjs with that version written into it; install.sh downloads it and an installed CLI updates itself from the
+# repo's latest release. Run it by hand from the Actions tab to retry; it releases nothing when nothing changed.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One release at a time, and never cancel one halfway through publishing.
+concurrency:
+  group: release-cli
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run checks out main's tip by default; release the commit CI passed on.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Decide whether to release, and the version
+        id: plan
+        run: |
+          last=$(git tag -l 'cli-v*' --sort=-v:refname | head -n1)
+          pkg=$(node -p 'require("./packages/cli/package.json").version')
+          if [ -z "$last" ]; then
+            echo "No release yet; releasing $pkg" >&2
+            { echo "release=true"; echo "version=$pkg"; echo "last="; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "$last" HEAD; then
+            echo "$last is not in this commit's history, so a newer commit was already released" >&2
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet "$last" HEAD -- packages/cli/sesh.mjs packages/cli/package.json; then
+            echo "The CLI has not changed since $last" >&2
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version=$(node -e '
+            const [last, pkg] = process.argv.slice(1).map((v) => v.split(".").map(Number));
+            const higher = pkg.findIndex((n, i) => n !== last[i]);
+            console.log(higher !== -1 && pkg[higher] > last[higher] ? pkg.join(".") : `${last[0]}.${last[1]}.${last[2] + 1}`);
+          ' "${last#cli-v}" "$pkg")
+          echo "Releasing $version (last release $last)" >&2
+          { echo "release=true"; echo "version=$version"; echo "last=$last"; } >> "$GITHUB_OUTPUT"
+      - name: Write the version into the CLI
+        if: steps.plan.outputs.release == 'true'
+        run: |
+          mkdir dist-release
+          sed 's/^export const VERSION = ".*";/export const VERSION = "${{ steps.plan.outputs.version }}";/' packages/cli/sesh.mjs > dist-release/sesh.mjs
+          test "$(node dist-release/sesh.mjs --version)" = "${{ steps.plan.outputs.version }}"
+      - name: Install with install.sh and run it
+        if: steps.plan.outputs.release == 'true'
+        run: |
+          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
+          # install.sh downloads $SESH_DOWNLOAD_URL/latest/download/sesh.mjs; lay the file out that way for the check
+          mkdir -p "$RUNNER_TEMP/releases/latest/download"
+          cp dist-release/sesh.mjs "$RUNNER_TEMP/releases/latest/download/"
+          SESH_DOWNLOAD_URL="file://$RUNNER_TEMP/releases" sh install.sh
+          test "$("$HOME/.local/bin/sesh" --version)" = "${{ steps.plan.outputs.version }}"
+      - name: Publish the release
+        if: steps.plan.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          LAST: ${{ steps.plan.outputs.last }}
+        run: |
+          if [ -n "$LAST" ]; then
+            git log --format='- %s (%h)' "$LAST..HEAD" -- packages/cli > notes.md
+          else
+            echo "First release of the sesh CLI." > notes.md
+          fi
+          gh release create "cli-v$VERSION" dist-release/sesh.mjs \
+            --target "$(git rev-parse HEAD)" --title "CLI $VERSION" --notes-file notes.md

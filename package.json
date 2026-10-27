@@ -8,7 +8,8 @@
     "node": ">=22"
   },
   "workspaces": [
-    "packages/web"
+    "packages/web",
+    "packages/cli"
   ],
   "scripts": {
     "dev": "npm run dev -w @sesh/web",

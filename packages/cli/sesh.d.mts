@@ -17,3 +17,19 @@ export interface Target {
 export function target(env?: Record<string, string | undefined>, config?: Target | null): Target | null;
 /** The `{ url, token }` saved in config.json next to the script (or `file`), or null when missing or unreadable. */
 export function readConfig(file?: string | URL): Target | null;
+export const VERSION: string;
+/** The server the CLI reports to and updates from, as an origin. */
+export function serverOrigin(env?: Record<string, string | undefined>, config?: Target | null): string;
+/** Whether this copy updates itself: the installed ~/.sesh/sesh.mjs, with updates not turned off. */
+export function updatesEnabled(
+  env?: Record<string, string | undefined>,
+  self?: string,
+  raw?: { auto_update?: boolean },
+): boolean;
+/** Whether a status line command is sesh's. */
+export function isSeshCommand(command: string): boolean;
+export function main(argv: string[]): Promise<void>;
+/** The version of a `cli-v<x.y.z>` release tag, or undefined for any other tag. */
+export function releaseVersion(tag: string): string | undefined;
+/** Whether version `a` is newer than `b`; both are x.y.z. */
+export function isNewer(a: string, b: string): boolean;

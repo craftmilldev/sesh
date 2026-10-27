@@ -1,6 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../src/db/index.js";
 import { openTestDb } from "../src/db/testing.js";
@@ -15,10 +13,8 @@ import {
   weekdayMs,
 } from "../src/store.js";
 import { uuidv7 } from "../src/ids.js";
-import { formatBar, parseInput, readConfig, reportable, target } from "../statusline/sesh-statusline.js";
 import { type Session, setupApp } from "./harness.js";
 
-const input = readFileSync(new URL("./fixtures/statusline-input.json", import.meta.url), "utf8");
 const logs = readFileSync(new URL("./fixtures/claude-code-session.json", import.meta.url), "utf8");
 
 let db: Db;
@@ -38,68 +34,6 @@ const snapshot = (extra: Record<string, unknown> = {}) => ({
   seven_day_resets_at: future + 86400,
   captured_at: new Date().toISOString(),
   ...extra,
-});
-
-describe("status line script", () => {
-  it("keeps only the session id and limits from the captured input", () => {
-    const s = parseInput(input, new Date("2026-10-22T00:00:00Z"));
-    expect(s).toEqual({
-      session_id: "0f6c2f0e-3b2a-4a55-9d0e-6a7c0a1b2c3d",
-      five_hour_pct: 19,
-      five_hour_resets_at: 1792000000,
-      seven_day_pct: 8,
-      seven_day_resets_at: 1792400000,
-      captured_at: "2026-10-22T00:00:00.000Z",
-    });
-    expect(formatBar(s)).toBe("5h 19% | 7d 8%");
-    expect(reportable(s)).toBe(true);
-  });
-
-  it("handles input without limits or that is not JSON", () => {
-    const none = parseInput('{"session_id":"x"}');
-    expect(formatBar(none)).toBe("5h n/a | 7d n/a");
-    expect(reportable(none)).toBe(false);
-    expect(parseInput("not json")).toBeNull();
-    expect(formatBar(null)).toBe("5h n/a | 7d n/a");
-    expect(reportable(null)).toBe(false);
-  });
-
-  it("posts where config.json says, unless SESH_URL and SESH_TOKEN say otherwise, then where the OTel export goes", () => {
-    const config = { url: "https://saved.test/v1/limits", token: "tok_saved" };
-    const otel = {
-      OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test/",
-      OTEL_EXPORTER_OTLP_HEADERS: "x-other=1,Authorization=Bearer tok_otel",
-    };
-    expect(target(otel, config)).toEqual(config);
-    expect(target(otel, null)).toEqual({ url: "https://sesh.test/v1/limits", token: "tok_otel" });
-    expect(
-      target(
-        {
-          OTEL_EXPORTER_OTLP_ENDPOINT: "https://c.test/otel",
-          OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20t",
-        },
-        null,
-      ),
-    ).toEqual({ url: "https://c.test/otel/v1/limits", token: "t" });
-    expect(target({ ...otel, SESH_URL: "https://other.test", SESH_TOKEN: "tok_sesh" }, config)).toEqual({
-      url: "https://other.test/v1/limits",
-      token: "tok_sesh",
-    });
-    expect(target({ OTEL_EXPORTER_OTLP_ENDPOINT: "https://sesh.test" }, null)).toBeNull();
-    expect(target({}, null)).toBeNull();
-  });
-
-  it("reads config.json, and treats a missing or broken one as none", () => {
-    const dir = mkdtempSync(join(tmpdir(), "sesh-config-"));
-    const file = join(dir, "config.json");
-    expect(readConfig(file)).toBeNull();
-    writeFileSync(file, JSON.stringify({ url: "https://saved.test/v1/limits", token: "tok_saved" }));
-    expect(readConfig(file)).toEqual({ url: "https://saved.test/v1/limits", token: "tok_saved" });
-    writeFileSync(file, JSON.stringify({ url: "not a url", token: "tok_saved" }));
-    expect(readConfig(file)).toBeNull();
-    writeFileSync(file, "{");
-    expect(readConfig(file)).toBeNull();
-  });
 });
 
 describe("POST /v1/limits", () => {

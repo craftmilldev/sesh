@@ -8,3 +8,4 @@ dist/
 .vercel/
 public/*
 !public/fonts/
+packages/web/cli/config.json
