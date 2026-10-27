@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { abbreviate, localMidnight, nextLocalMidnight, num, share } from "./fmt.js";
+import { abbreviate, num, share } from "./fmt.js";
 import { message } from "./layout.js";
 import { api, getToken } from "./session.js";
 
@@ -121,8 +121,7 @@ export function SessionDetail({ id }: { id: string }) {
       (d) => {
         setData(d);
         const start = new Date(d.session.started_at);
-        const q = `since=${encodeURIComponent(localMidnight(start).toISOString())}&until=${encodeURIComponent(nextLocalMidnight(start).toISOString())}`;
-        api<{ tokens: number }>(`/today?${q}`).then(
+        api<{ tokens: number }>(`/today?day=${start.toISOString().slice(0, 10)}`).then(
           (t) => setDayTokens(t.tokens),
           () => undefined, // the percentage is a nicety; the session itself is shown
         );
@@ -157,7 +156,7 @@ export function SessionDetail({ id }: { id: string }) {
           <Figure
             label="Tokens"
             value={abbreviate(total)}
-            note={dayTokens ? `${share(total, dayTokens)} of that day` : "in the session"}
+            note={dayTokens && total <= dayTokens ? `${share(total, dayTokens)} of that day` : "in the session"}
           />
           <Figure label="Cache hit" value={share(session.cache_read_tokens, total)} note="of all tokens" />
           <Figure label="Prompts" value={num(session.prompts)} note={`over ${minutes} min`} />

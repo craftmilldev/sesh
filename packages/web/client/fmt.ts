@@ -14,17 +14,3 @@ export function abbreviate(n: number): string {
 export const share = (part: number, whole: number) => (whole > 0 ? `${((part / whole) * 100).toFixed(1)}%` : "–");
 
 export const clock = (d: Date) => d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-
-/** Midnight at the start of the viewer's local day. */
-export function localMidnight(d = new Date()): Date {
-  const m = new Date(d);
-  m.setHours(0, 0, 0, 0);
-  return m;
-}
-
-/** The start of the next local day (not midnight + 24h, so a clock change cannot shift it). */
-export function nextLocalMidnight(d: Date): Date {
-  const m = localMidnight(d);
-  m.setDate(m.getDate() + 1);
-  return m;
-}

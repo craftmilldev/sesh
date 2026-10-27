@@ -3,6 +3,7 @@ import type { Db } from "./db/index.js";
 import { consoleSender, type SendEmail } from "./email.js";
 import { LOGIN_CODE_RE, normalizeLoginCode } from "./ids.js";
 import { ANONYMOUS, type Metrics, noopMetrics } from "./metrics.js";
+import { parseUtcDay, utcDay } from "./day.js";
 import { decodeJsonPayload, parsePlanUsage } from "./claude-code.js";
 import { parsePending } from "./parse.js";
 import * as store from "./store.js";
@@ -16,6 +17,8 @@ export interface AppOptions {
   metrics?: Metrics;
   /** Delivers login codes. Defaults to printing them to the console. */
   sendEmail?: SendEmail;
+  /** The current time; tests set it. Defaults to the clock. */
+  now?: () => Date;
 }
 
 /** The header the SPA names its active org in. Only a hint: it is checked against the user's memberships on every request. */
@@ -81,6 +84,7 @@ type OrgEnv = { Variables: { user: store.User; org: store.Membership; orgs: stor
 export function createApp(opts: AppOptions) {
   const metrics = opts.metrics ?? noopMetrics;
   const sendEmail = opts.sendEmail ?? consoleSender;
+  const now = opts.now ?? (() => new Date());
   const app = new Hono();
 
   // Nothing is checked yet (there is no database); a failing check will return 503 and record health_check_failed.
@@ -247,26 +251,29 @@ export function createApp(opts: AppOptions) {
     return c.json(pool);
   });
 
-  // The org's sessions started from `since` (the viewer's local midnight) until `until` (default: now on):
-  // totals and the 5 heaviest.
+  // What the org did today (the UTC day), by when each prompt and event happened: totals and the 5 heaviest
+  // sessions. `day=YYYY-MM-DD` asks for another UTC day, for a session's share of the day it started.
   scoped.get("/today", async (c) => {
     const { user, org } = c.var;
-    const since = new Date(c.req.query("since") ?? "");
-    const untilRaw = c.req.query("until");
-    const until = untilRaw === undefined ? new Date("9999-01-01") : new Date(untilRaw);
-    if (Number.isNaN(since.getTime()) || Number.isNaN(until.getTime())) {
-      await metrics.capture("today_rejected", user.id, { reason: "invalid_time" });
-      return fail(c, 400, "invalid_time", "since and until must be timestamps like 2026-10-22T04:00:00.000Z.");
+    const dayParam = c.req.query("day");
+    const day = dayParam === undefined ? utcDay(now()) : parseUtcDay(dayParam);
+    if (!day) {
+      await metrics.capture("today_rejected", user.id, { reason: "invalid_day" });
+      return fail(c, 400, "invalid_day", "day must be a date like 2026-10-22.");
     }
-    const { totals, top, orgSessions } = await store.sessionsBetween(await opts.getDb(), org.id, since, until, 5);
-    await metrics.capture("today_viewed", user.id, { empty: totals.sessions === 0, org_empty: orgSessions === 0 });
+    const { totals, top, orgSessions } = await store.activityBetween(await opts.getDb(), org.id, day.start, day.end, 5);
+    await metrics.capture("today_viewed", user.id, {
+      empty: totals.sessions === 0,
+      org_empty: orgSessions === 0,
+      other_day: dayParam !== undefined,
+    });
     return c.json({
       ...totals,
       org_sessions: orgSessions,
       top: top.map((s) => ({
         id: s.id,
         started_at: s.started_at.toISOString(),
-        tokens: s.input_tokens + s.output_tokens + s.cache_read_tokens + s.cache_write_tokens,
+        tokens: s.tokens,
         cache_read_tokens: s.cache_read_tokens,
         prompts: s.prompts,
         tool_calls: s.tool_calls,

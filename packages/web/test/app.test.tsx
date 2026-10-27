@@ -158,8 +158,11 @@ describe("signed-in pages", () => {
   });
 
   it("shows the team's day: figures, the pool and the heaviest sessions, with no names", async () => {
-    vi.stubGlobal("fetch", fakeApi());
+    const fetchMock = fakeApi();
+    vi.stubGlobal("fetch", fetchMock);
     await act(async () => root.render(sessionsPage()));
+    // The server decides what "today" is (the UTC day); the page sends no time.
+    expect(fetchMock.mock.calls.some(([u]) => u === "/api/today")).toBe(true);
     expect(container.querySelector("h1")!.textContent).toBe("3 sessions in alpha today");
     expect(text()).toContain("51.7M");
     expect(text()).toContain("50.5M read from cache");

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { abbreviate, clock, localMidnight, num, share } from "./fmt.js";
+import { abbreviate, clock, num, share } from "./fmt.js";
 import { message } from "./layout.js";
 import { api } from "./session.js";
 
@@ -51,9 +51,7 @@ export function Home({ orgName }: { orgName: string }) {
   const [error, setError] = useState<string>();
 
   useEffect(() => {
-    api<Today>(`/today?since=${encodeURIComponent(localMidnight().toISOString())}`).then(setToday, (e) =>
-      setError(message(e)),
-    );
+    api<Today>("/today").then(setToday, (e) => setError(message(e)));
     api<Pool>("/limits").then(setPool, () => setPool(undefined));
   }, []);
 

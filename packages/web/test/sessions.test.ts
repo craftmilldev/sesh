@@ -6,6 +6,7 @@ import { uuidv7 } from "../src/ids.js";
 import { parsePending } from "../src/parse.js";
 import { storeRawPayload } from "../src/store.js";
 import { type Session, setupApp } from "./harness.js";
+import { parseUtcDay, utcDay } from "../src/day.js";
 
 /** One session: two prompts, two API calls (16 input, 200 output, 20500 cache read, 2500 cache write), two tool calls. */
 const fixture = readFileSync(new URL("./fixtures/claude-code-session.json", import.meta.url), "utf8");
@@ -145,5 +146,87 @@ describe("session detail", () => {
     expect((await t.call("/sessions/nope", { session: owner })).status).toBe(404);
     expect(t.events.filter((e) => e.event === "session_detail_not_found").length).toBe(3);
     expect((await t.call(`/sessions/${id}`)).status).toBe(401);
+  });
+});
+
+describe("today", () => {
+  const NOW = new Date("2026-10-27T15:00:00.000Z");
+
+  /** A session in a fresh org, with one prompt and one tool call (100 + 50 tokens) at each of `times`, and what the org sees. */
+  async function setup(email: string, startedAt: string, times: string[]) {
+    const t = setupApp(db, () => NOW);
+    const session = await t.signIn(email);
+    const [user] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = $1`, [email]);
+    const me = (await (await t.call("/me", { session })).json()) as { org: { id: string } };
+    const id = uuidv7();
+    await db.query(
+      `INSERT INTO sesh.sessions (id, org_id, user_id, agent, external_id, started_at, ended_at) VALUES ($1, $2, $3, 'claude-code', $4, $5, $6)`,
+      [id, me.org.id, user!.id, id, startedAt, times.at(-1) ?? startedAt],
+    );
+    for (const [i, at] of times.entries()) {
+      await db.query(`INSERT INTO sesh.prompts (id, session_id, external_id, started_at) VALUES ($1, $2, $3, $4)`, [
+        uuidv7(),
+        id,
+        `p${i}`,
+        at,
+      ]);
+      await db.query(
+        `INSERT INTO sesh.events (id, session_id, dedupe_key, kind, occurred_at, input_tokens, output_tokens, cache_read_tokens, raw)
+         VALUES ($1, $2, $3, 'tool_call', $4, 100, 50, 10, '{}')`,
+        [uuidv7(), id, `e${i}`, at],
+      );
+    }
+    return { t, session, id };
+  }
+  const today = async (x: Awaited<ReturnType<typeof setup>>, query = "") =>
+    x.t.call(`/today${query}`, { session: x.session });
+
+  it("counts a session that started yesterday only for what it did today", async () => {
+    const x = await setup("yesterday@example.com", "2026-10-26T23:00:00.000Z", [
+      "2026-10-26T23:30:00.000Z",
+      "2026-10-27T01:00:00.000Z",
+    ]);
+    const body = (await (await today(x)).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ sessions: 1, prompts: 1, tool_calls: 1, tokens: 160, cache_read_tokens: 10 });
+    expect(body.top).toMatchObject([{ id: x.id, tokens: 160, prompts: 1, tool_calls: 1 }]);
+    const before = (await (await today(x, "?day=2026-10-26")).json()) as Record<string, unknown>;
+    expect(before).toMatchObject({ sessions: 1, prompts: 1, tool_calls: 1, tokens: 160 });
+  });
+
+  it("does not count a session that started today but did nothing today", async () => {
+    // Started at 00:00 UTC today (as the clock sees it) with all its activity the day before.
+    const x = await setup("idle@example.com", "2026-10-27T00:00:00.000Z", ["2026-10-26T12:00:00.000Z"]);
+    const body = (await (await today(x)).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ sessions: 0, prompts: 0, tool_calls: 0, tokens: 0, org_sessions: 1, top: [] });
+  });
+
+  it("ends the day at UTC midnight", async () => {
+    const x = await setup("edge@example.com", "2026-10-27T00:00:00.000Z", [
+      "2026-10-27T00:00:00.000Z",
+      "2026-10-28T00:00:00.000Z",
+    ]);
+    const body = (await (await today(x)).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ sessions: 1, prompts: 1 });
+  });
+
+  it("rejects a day that is not a date, and records it", async () => {
+    const x = await setup("baddate@example.com", "2026-10-27T01:00:00.000Z", ["2026-10-27T01:00:00.000Z"]);
+    for (const bad of ["tomorrow", "2026-02-30", "2026-10-27T00:00:00Z"]) {
+      const res = await today(x, `?day=${bad}`);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("invalid_day");
+    }
+    expect(x.t.events.filter((e) => e.event === "today_rejected")).toHaveLength(3);
+  });
+});
+
+describe("utcDay", () => {
+  it("is the UTC day, whatever the offset", () => {
+    expect(utcDay(new Date("2026-10-27T23:59:59.999Z"))).toEqual({
+      start: new Date("2026-10-27T00:00:00.000Z"),
+      end: new Date("2026-10-28T00:00:00.000Z"),
+    });
+    expect(parseUtcDay("2026-10-27")?.start).toEqual(new Date("2026-10-27T00:00:00.000Z"));
+    expect(parseUtcDay("2026-13-01")).toBeUndefined();
   });
 });
