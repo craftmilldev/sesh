@@ -486,6 +486,11 @@ export function createApp(opts: AppOptions) {
     if (signal === "logs") {
       try {
         const r = await parsePending(db);
+        if (r.backfillSkipped)
+          await metrics.capture("backfill_records_skipped", who.userId, {
+            reason: "turn_already_stored",
+            count: r.backfillSkipped,
+          });
         if (r.failed) await metrics.capture("payload_parse_failed", who.userId, { format, count: r.failed });
         else
           await metrics.capture("payload_parsed", who.userId, {

@@ -3,11 +3,13 @@ import { sha256 } from "./ids.js";
 
 /** One Claude Code log record, reduced to the agent-neutral shape sesh stores. */
 export type ParsedRecord =
-  | { type: "prompt"; sessionId: string; promptId: string; at: Date; promptLength?: number }
+  | { type: "prompt"; sessionId: string; promptId: string; at: Date; promptLength?: number; backfill?: boolean }
   | {
       type: "event";
       sessionId: string;
       promptId?: string;
+      /** From a payload rebuilt from disk (`sesh.source=backfill`), not sent live. */
+      backfill?: boolean;
       /** Stable per record, so parsing the same payload twice (or an overlapping one) adds nothing. */
       dedupeKey: string;
       kind: "api_request" | "tool_call";
@@ -89,13 +91,15 @@ export function decodeJsonPayload(body: Uint8Array, contentType: string, content
 /**
  * Reads an OTLP/JSON logs export from Claude Code. Records are `user_prompt`, `api_request` and `tool_result` events
  * (named in the `event.name` attribute, with or without a `claude_code.` prefix); everything else is ignored.
+ * Records from a payload whose resource says `sesh.source=backfill` are marked `backfill`.
  * Records without a `session.id` can't be placed and are skipped. Prompt text is dropped here, before anything is stored.
  */
 export function parseClaudeCodeLogs(payload: unknown): ParsedRecord[] {
   const out: ParsedRecord[] = [];
   const resources = (payload as { resourceLogs?: unknown[] } | null)?.resourceLogs;
   if (!Array.isArray(resources)) return out;
-  for (const rl of resources as { scopeLogs?: { logRecords?: unknown[] }[] }[]) {
+  for (const rl of resources as { resource?: { attributes?: unknown }; scopeLogs?: { logRecords?: unknown[] }[] }[]) {
+    const backfill = attrsOf(rl.resource?.attributes)["sesh.source"] === "backfill" || undefined;
     for (const scope of rl.scopeLogs ?? []) {
       for (const rec of (scope.logRecords ?? []) as Record<string, unknown>[]) {
         const attrs = attrsOf(rec.attributes);
@@ -112,7 +116,8 @@ export function parseClaudeCodeLogs(payload: unknown): ParsedRecord[] {
         const promptId = str(attrs["prompt.id"]);
 
         if (name === "user_prompt") {
-          if (promptId) out.push({ type: "prompt", sessionId, promptId, at, promptLength: num(attrs.prompt_length) });
+          if (promptId)
+            out.push({ type: "prompt", sessionId, promptId, at, promptLength: num(attrs.prompt_length), backfill });
           continue;
         }
         if (name !== "api_request" && name !== "tool_result") continue;
@@ -124,6 +129,7 @@ export function parseClaudeCodeLogs(payload: unknown): ParsedRecord[] {
           type: "event",
           sessionId,
           promptId,
+          backfill,
           dedupeKey: seq !== undefined ? `${name}:${seq}` : `${name}:h:${sha256(JSON.stringify(raw))}`,
           kind: name === "api_request" ? "api_request" : "tool_call",
           at,
