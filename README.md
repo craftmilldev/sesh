@@ -111,7 +111,8 @@ curl localhost:3000/health   # {"ok":true}
 ```
 
 Without `RESEND_API_KEY`, login codes are printed to the server console. Set `POSTHOG_API_KEY` to turn on product
-metrics (unset sends nothing). `npm run dev` applies migrations to the local database.
+metrics (unset sends nothing). Every event carries `product = sesh` and `app = sesh-web`; filter on `product` in
+PostHog to see only Sesh (the Craftmill project is shared with loopway, whose `app` is `web`/`cli`). `npm run dev` applies migrations to the local database.
 
 ## Test
 
