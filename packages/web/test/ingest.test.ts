@@ -36,6 +36,56 @@ const payloads = (email: string) =>
     [email],
   );
 
+describe("backfill ingest response", () => {
+  const backfill = (prompt: string) =>
+    JSON.stringify({
+      resourceLogs: [
+        {
+          resource: { attributes: [{ key: "sesh.source", value: { stringValue: "backfill" } }] },
+          scopeLogs: [
+            {
+              logRecords: [
+                {
+                  timeUnixNano: "1760000000000000000",
+                  body: { stringValue: "claude_code.user_prompt" },
+                  attributes: [
+                    { key: "event.name", value: { stringValue: "user_prompt" } },
+                    { key: "session.id", value: { stringValue: "bf-ingest" } },
+                    { key: "prompt.id", value: { stringValue: prompt } },
+                    { key: "prompt_length", value: { intValue: "5" } },
+                  ],
+                },
+                {
+                  timeUnixNano: "1760000001000000000",
+                  body: { stringValue: "claude_code.tool_result" },
+                  attributes: [
+                    { key: "event.name", value: { stringValue: "tool_result" } },
+                    { key: "session.id", value: { stringValue: "bf-ingest" } },
+                    { key: "prompt.id", value: { stringValue: prompt } },
+                    { key: "tool_name", value: { stringValue: "Bash" } },
+                    { key: "success", value: { boolValue: true } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+  it("reports the turns it stored and the ones it already had, and only for backfill", async () => {
+    const t = setup();
+    const token = await t.makeToken(await t.signIn("bf-ing@example.com"));
+    const auth = { authorization: `Bearer ${token}` };
+    const first = await t.post("/v1/logs", backfill("p-1"), auth);
+    expect(await first.json()).toEqual({ sesh: { turns_accepted: 1, turns_skipped: 0 } });
+    const again = await t.post("/v1/logs", backfill("p-1"), auth);
+    expect(await again.json()).toEqual({ sesh: { turns_accepted: 0, turns_skipped: 1 } });
+    const live = await t.post("/v1/logs", JSON.stringify({ resourceLogs: [] }), auth);
+    expect(await live.json()).toEqual({});
+  });
+});
+
 describe("tokens", () => {
   it("shows a new token once, stores only its hash, lists it and revokes it", async () => {
     const t = setup();

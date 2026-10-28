@@ -473,7 +473,7 @@ export function createApp(opts: AppOptions) {
       }
     }
 
-    await store.storeRawPayload(db, {
+    const payloadId = await store.storeRawPayload(db, {
       ...who,
       signal,
       contentType,
@@ -481,15 +481,22 @@ export function createApp(opts: AppOptions) {
       body,
     });
     await metrics.capture("ingest_accepted", who.userId, { signal, format, gzip: encoding === "gzip" });
-    // Parse logs right away, and sweep up any earlier payload whose parse failed. The raw payload is already safe,
-    // so a failure here is only counted.
-    // A backfill upload also gets its turn counts back, which `sesh upload` prints; live payloads get `{}`.
+    // Parse logs right away, then sweep up any earlier payload whose parse failed. The raw payload is already safe,
+    // so a failure here is only counted. A backfill upload gets the turn counts of its own payload back, which
+    // `sesh upload` prints (not the swept ones, which may be another org's); live payloads get `{}`.
     let backfillTurns: { turns_accepted: number; turns_skipped: number } | undefined;
     if (signal === "logs") {
       try {
-        const r = await parsePending(db);
-        if (r.turnsAccepted || r.turnsSkipped)
-          backfillTurns = { turns_accepted: r.turnsAccepted, turns_skipped: r.turnsSkipped };
+        const own = await parsePending(db, payloadId);
+        if (own.turnsAccepted || own.turnsSkipped)
+          backfillTurns = { turns_accepted: own.turnsAccepted, turns_skipped: own.turnsSkipped };
+        const swept = await parsePending(db);
+        const r = {
+          parsed: own.parsed + swept.parsed,
+          skipped: own.skipped + swept.skipped,
+          backfillSkipped: own.backfillSkipped + swept.backfillSkipped,
+          failed: own.failed + swept.failed,
+        };
         if (r.backfillSkipped)
           await metrics.capture("backfill_records_skipped", who.userId, {
             reason: "turn_already_stored",
