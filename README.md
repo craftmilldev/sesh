@@ -98,7 +98,7 @@ By hand: copy the script somewhere stable as `sesh.mjs`, put the `config.json` b
 
 `SESH_STATE_DIR` (default `~/.sesh`) holds the throttle file.
 
-The earlier statusline spike is in [`spike/statusline/`](spike/statusline/).
+Claude Code's OTel export carries no plan or rate-limit data (no 5-hour or weekly limit fields), so plan usage can only come from the status line input.
 
 ## Run
 
