@@ -283,7 +283,7 @@ export function createApp(opts: AppOptions) {
 
   // Tool calls, prompts and active sessions for each of the last 7, 14 or 28 UTC days (zero-filled, oldest first),
   // with today's three numbers, and tool calls per prompt (null on a day with no prompts, to two decimals).
-  // Counted by when each prompt and event happened.
+  // `by_dow` is the average per day for each weekday (Mon..Sun) of the range. Counted by when each prompt and event happened.
   scoped.get("/insights/activity", async (c) => {
     const { user, org } = c.var;
     const raw = c.req.query("days") ?? "";
@@ -300,6 +300,23 @@ export function createApp(opts: AppOptions) {
     const [orgSessions] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`, [
       org.id,
     ]);
+    // Mon..Sun averages per day over the range: the sum on those days / how many of them the range holds (zero days count).
+    const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const by_dow = WEEKDAYS.map((dow, i) => {
+      const mine = rows.filter((r) => (new Date(`${r.day}T00:00:00Z`).getUTCDay() + 6) % 7 === i);
+      const avg = (pick: (r: (typeof rows)[number]) => number) =>
+        mine.length ? round2(mine.reduce((sum, r) => sum + pick(r), 0) / mine.length) : 0;
+      const tool_calls = avg((r) => r.tool_calls);
+      const prompts = avg((r) => r.prompts);
+      return {
+        dow,
+        tool_calls,
+        prompts,
+        active_sessions: avg((r) => r.active_sessions),
+        tool_calls_per_prompt: prompts > 0 ? round2(tool_calls / prompts) : null,
+      };
+    });
     const last = rows.at(-1)!;
     const today = {
       tool_calls: last.tool_calls,
@@ -312,7 +329,7 @@ export function createApp(opts: AppOptions) {
       empty: rows.every((r) => !r.prompts && !r.tool_calls),
       org_empty: Number(orgSessions!.n) === 0,
     });
-    return c.json({ days: rows, today, org_sessions: Number(orgSessions!.n) });
+    return c.json({ days: rows, by_dow, today, org_sessions: Number(orgSessions!.n) });
   });
 
   // The org's members, by name and role, with `you` on the signed-in user's row.

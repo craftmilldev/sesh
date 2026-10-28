@@ -183,7 +183,18 @@ const decimal = (n: number) => String(Math.round(n * 100) / 100);
 const RIGHT = 40;
 
 /** Several series as lines over the same UTC days; the `right` series share a second, labeled y axis. */
-export function MultiLineChart({ days, series, title }: { days: string[]; series: Series[]; title: string }) {
+export function MultiLineChart({
+  days,
+  series,
+  title,
+  names,
+}: {
+  days: string[];
+  series: Series[];
+  title: string;
+  /** Names the points instead of dates ("Mon".."Sun"), aligned with `days`: for averages by weekday. */
+  names?: string[];
+}) {
   const [active, setActive] = useState<number>();
   const left = series.filter((s) => s.axis === "left");
   const right = series.filter((s) => s.axis === "right");
@@ -207,8 +218,8 @@ export function MultiLineChart({ days, series, title }: { days: string[]; series
   );
   const every = n > 14 ? 2 : 1;
   const show = (s: Series, v: number | null) => (v === null ? "–" : s.axis === "right" ? decimal(v) : num(v));
-  const label = (i: number) =>
-    `${dayLabel(days[i]!)}: ${series.map((s) => `${s.label}: ${show(s, s.values[i]!)}`).join(", ")}`;
+  const nameOf = (i: number) => names?.[i] ?? dayLabel(days[i]!);
+  const label = (i: number) => `${nameOf(i)}: ${series.map((s) => `${s.label}: ${show(s, s.values[i]!)}`).join(", ")}`;
   const segmentsOf = (s: Series) => {
     const segments: string[] = [];
     let run: string[] = [];
@@ -233,7 +244,7 @@ export function MultiLineChart({ days, series, title }: { days: string[]; series
           className="chart chart-multi"
           viewBox={`0 0 ${width} ${TOP + H + BOTTOM}`}
           role="group"
-          aria-label={`${title} per day`}
+          aria-label={`${title} ${names ? "by weekday" : "per day"}`}
           onMouseLeave={() => setActive(undefined)}
         >
           {gridlines.map((g) => (
@@ -282,7 +293,7 @@ export function MultiLineChart({ days, series, title }: { days: string[]; series
             </g>
           ))}
           {days.map((day, i) => {
-            const isToday = i === n - 1;
+            const isToday = !names && i === n - 1;
             const d = parse(day);
             const first = i === 0 || d.getUTCDate() === 1;
             const showTick = first || (n - 1 - i) % every === 0;
@@ -299,18 +310,24 @@ export function MultiLineChart({ days, series, title }: { days: string[]; series
                 onBlur={() => setActive(undefined)}
               >
                 <rect className="chart-hit" x={x(i) - slot / 2} y={TOP} width={slot} height={H} />
-                {showTick && (
+                {names ? (
                   <text className="chart-tick day" x={x(i)} y={TOP + H + 14} textAnchor="middle">
-                    <tspan x={x(i)}>{WEEKDAYS[d.getUTCDay()]![0]}</tspan>
-                    <tspan x={x(i)} dy={13}>
-                      {d.getUTCDate()}
-                    </tspan>
-                    {(first || isToday) && (
-                      <tspan x={x(i)} dy={13}>
-                        {isToday && !first ? "today" : MONTHS[d.getUTCMonth()]}
-                      </tspan>
-                    )}
+                    {names[i]}
                   </text>
+                ) : (
+                  showTick && (
+                    <text className="chart-tick day" x={x(i)} y={TOP + H + 14} textAnchor="middle">
+                      <tspan x={x(i)}>{WEEKDAYS[d.getUTCDay()]![0]}</tspan>
+                      <tspan x={x(i)} dy={13}>
+                        {d.getUTCDate()}
+                      </tspan>
+                      {(first || isToday) && (
+                        <tspan x={x(i)} dy={13}>
+                          {isToday && !first ? "today" : MONTHS[d.getUTCMonth()]}
+                        </tspan>
+                      )}
+                    </text>
+                  )
                 )}
               </g>
             );
@@ -322,7 +339,7 @@ export function MultiLineChart({ days, series, title }: { days: string[]; series
             role="status"
             style={{ left: `${(x(active) / width) * 100}%`, top: `${((TOP - 4) / (TOP + H + BOTTOM)) * 100}%` }}
           >
-            <span className="chart-tip-day">{dayLabel(days[active]!)}</span>
+            <span className="chart-tip-day">{nameOf(active)}</span>
             {series.map((s) => (
               <span className={`chart-tip-value ${s.className}`} key={s.key}>
                 {s.label}: {show(s, s.values[active]!)}
