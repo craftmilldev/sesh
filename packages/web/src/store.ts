@@ -659,3 +659,51 @@ export async function activityBetween(
     orgSessions: Number(all!.n),
   };
 }
+
+export interface DayActivity {
+  /** The UTC day, "YYYY-MM-DD". */
+  day: string;
+  tool_calls: number;
+  prompts: number;
+  /** Sessions with any prompt or event that day. */
+  active_sessions: number;
+}
+
+/**
+ * The org's activity for each of the `days` UTC days ending with the day that starts at `lastStart`: oldest first, a
+ * zero row for a day with none. Counted by when each prompt and event happened, so a session spanning days is active on
+ * each of them.
+ */
+export async function dailyActivity(db: Db, orgId: string, lastStart: Date, days: number): Promise<DayActivity[]> {
+  const first = new Date(lastStart.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+  const end = new Date(lastStart.getTime() + 24 * 60 * 60 * 1000);
+  const rows = await db.query<{ day: string; tool_calls: string; prompts: string; active_sessions: string }>(
+    `WITH acts AS (
+       SELECT e.session_id, e.occurred_at AS at, (e.kind = 'tool_call') AS tool_call, false AS prompt
+       FROM sesh.events e JOIN sesh.sessions s ON s.id = e.session_id
+       WHERE s.org_id = $1 AND e.occurred_at >= $2 AND e.occurred_at < $3
+       UNION ALL
+       SELECT p.session_id, p.started_at, false, true
+       FROM sesh.prompts p JOIN sesh.sessions s ON s.id = p.session_id
+       WHERE s.org_id = $1 AND p.started_at >= $2 AND p.started_at < $3
+     ),
+     per_day AS (
+       SELECT (at AT TIME ZONE 'UTC')::date AS day,
+              count(*) FILTER (WHERE tool_call) AS tool_calls, count(*) FILTER (WHERE prompt) AS prompts,
+              count(DISTINCT session_id) AS active_sessions
+       FROM acts GROUP BY 1
+     )
+     SELECT to_char(d.day, 'YYYY-MM-DD') AS day, COALESCE(p.tool_calls, 0) AS tool_calls,
+            COALESCE(p.prompts, 0) AS prompts, COALESCE(p.active_sessions, 0) AS active_sessions
+     FROM generate_series(($2::timestamptz AT TIME ZONE 'UTC')::date, ($3::timestamptz AT TIME ZONE 'UTC')::date - 1, interval '1 day') AS d(day)
+     LEFT JOIN per_day p ON p.day = d.day::date
+     ORDER BY d.day`,
+    [orgId, first, end],
+  );
+  return rows.map((r) => ({
+    day: r.day,
+    tool_calls: Number(r.tool_calls),
+    prompts: Number(r.prompts),
+    active_sessions: Number(r.active_sessions),
+  }));
+}

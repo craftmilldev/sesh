@@ -220,6 +220,93 @@ describe("today", () => {
   });
 });
 
+describe("insights activity", () => {
+  const NOW = new Date("2026-10-27T15:00:00.000Z");
+
+  it("counts a session on each day it was active, fills missing days with zero, and reports today", async () => {
+    const t = setupApp(db, () => NOW);
+    const session = await t.signIn("insights@example.com");
+    const [user] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = 'insights@example.com'`);
+    const me = (await (await t.call("/me", { session })).json()) as { org: { id: string } };
+    const add = async (at: string[], tools: string[]) => {
+      const id = uuidv7();
+      await db.query(
+        `INSERT INTO sesh.sessions (id, org_id, user_id, agent, external_id, started_at, ended_at) VALUES ($1, $2, $3, 'claude-code', $4, $5, $5)`,
+        [id, me.org.id, user!.id, id, at[0] ?? tools[0]],
+      );
+      for (const [i, a] of at.entries())
+        await db.query(`INSERT INTO sesh.prompts (id, session_id, external_id, started_at) VALUES ($1, $2, $3, $4)`, [
+          uuidv7(),
+          id,
+          `p${i}`,
+          a,
+        ]);
+      for (const [i, a] of tools.entries())
+        await db.query(
+          `INSERT INTO sesh.events (id, session_id, dedupe_key, kind, occurred_at, raw) VALUES ($1, $2, $3, 'tool_call', $4, '{}')`,
+          [uuidv7(), id, `e${i}`, a],
+        );
+    };
+    // A: prompts on the 22nd and 27th, tool calls on the 22nd (two), 24th and 27th. B: a prompt and tool call today.
+    await add(
+      ["2026-10-22T10:00:00.000Z", "2026-10-27T01:00:00.000Z"],
+      ["2026-10-22T10:01:00.000Z", "2026-10-22T23:59:59.000Z", "2026-10-24T09:00:00.000Z", "2026-10-27T01:01:00.000Z"],
+    );
+    await add(["2026-10-27T14:00:00.000Z"], ["2026-10-27T14:01:00.000Z"]);
+    // Before the 7 day range: not in it.
+    await add(["2026-10-10T10:00:00.000Z"], []);
+
+    const res = await t.call("/insights/activity?days=7", { session });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { days: Record<string, unknown>[]; today: unknown; org_sessions: number };
+    expect(body.days.map((d) => d.day)).toEqual([
+      "2026-10-21",
+      "2026-10-22",
+      "2026-10-23",
+      "2026-10-24",
+      "2026-10-25",
+      "2026-10-26",
+      "2026-10-27",
+    ]);
+    const pick = (d: Record<string, unknown>) => [d.tool_calls, d.prompts, d.active_sessions];
+    expect(body.days.map(pick)).toEqual([
+      [0, 0, 0],
+      [2, 1, 1],
+      [0, 0, 0],
+      [1, 0, 1],
+      [0, 0, 0],
+      [0, 0, 0],
+      [2, 2, 2],
+    ]);
+    expect(body.today).toEqual({ tool_calls: 2, prompts: 2, active_sessions: 2 });
+    expect(body.org_sessions).toBe(3);
+    const wide = (await (await t.call("/insights/activity?days=28", { session })).json()) as typeof body;
+    expect(wide.days).toHaveLength(28);
+    expect(wide.days.find((d) => d.day === "2026-10-10")).toMatchObject({ prompts: 1, active_sessions: 1 });
+    expect(t.events.filter((e) => e.event === "insights_viewed")).toHaveLength(2);
+  });
+
+  it("is all zeros for an empty org, and rejects other ranges, recording both", async () => {
+    const t = setupApp(db, () => NOW);
+    const session = await t.signIn("insights-empty@example.com");
+    const body = (await (await t.call("/insights/activity?days=14", { session })).json()) as {
+      days: unknown[];
+      today: unknown;
+      org_sessions: number;
+    };
+    expect(body.days).toHaveLength(14);
+    expect(body.today).toEqual({ tool_calls: 0, prompts: 0, active_sessions: 0 });
+    expect(body.org_sessions).toBe(0);
+    expect(t.events.at(-1)).toMatchObject({ event: "insights_viewed", properties: { empty: true, org_empty: true } });
+    for (const bad of ["", "?days=", "?days=10", "?days=7.0", "?days=-7"]) {
+      const res = await t.call(`/insights/activity${bad}`, { session });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("invalid_days");
+    }
+    expect(t.events.filter((e) => e.event === "insights_rejected")).toHaveLength(5);
+  });
+});
+
 describe("utcDay", () => {
   it("is the UTC day, whatever the offset", () => {
     expect(utcDay(new Date("2026-10-27T23:59:59.999Z"))).toEqual({

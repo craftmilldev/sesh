@@ -2,6 +2,7 @@ import { AllSessions } from "./all-sessions.js";
 import { Members } from "./members.js";
 import { Landing } from "./landing.js";
 import { Home } from "./home.js";
+import { Insights } from "./insights.js";
 import { Page } from "./layout.js";
 import { InvitePage } from "./invite.js";
 import { Login } from "./login.js";
@@ -22,6 +23,7 @@ export function page(path: string) {
   }
   if (path === "/app/members") return <Page current="members">{(ctx) => <Members {...ctx} />}</Page>;
   if (path === "/app/tokens") return <Page current="tokens">{({ me }) => <Tokens me={me} />}</Page>;
+  if (path === "/app/insights") return <Page current="insights">{() => <Insights />}</Page>;
   if (path === "/app/sessions") return <Page current="sessions">{() => <AllSessions />}</Page>;
   return <Page current="sessions">{({ me }) => <Home orgName={me.org.name} />}</Page>;
 }

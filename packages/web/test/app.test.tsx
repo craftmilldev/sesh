@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../client/home.js";
+import { Insights } from "../client/insights.js";
 import { Landing } from "../client/landing.js";
 import { Chrome, Page } from "../client/layout.js";
 import { Members } from "../client/members.js";
@@ -17,6 +18,19 @@ const baseOrgs = [
 ];
 
 let orgs = [...baseOrgs];
+
+/** The activity endpoint's answer: `days` UTC days ending 2026-10-27, `n` tool calls on the nth day. */
+function insights(days: number, sessions: number) {
+  const rows = Array.from({ length: days }, (_, i) => ({
+    day: new Date(Date.UTC(2026, 9, 27 - (days - 1 - i))).toISOString().slice(0, 10),
+    tool_calls: i + 1,
+    prompts: 2,
+    active_sessions: 1,
+  }));
+  const last = rows.at(-1)!;
+  const today = { tool_calls: last.tool_calls, prompts: last.prompts, active_sessions: last.active_sessions };
+  return { days: rows, today, org_sessions: sessions };
+}
 
 /** A fake API where /me reports whichever org the last switch chose. */
 function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
@@ -39,47 +53,49 @@ function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
     const body =
       path === "/me"
         ? { user: { name: "Ada" }, org: active, orgs, ingest_endpoint: "https://sesh.test" }
-        : path === "/today"
-          ? {
-              sessions,
-              org_sessions: sessions,
-              tokens: 51_700_000,
-              cache_read_tokens: 50_500_000,
-              prompts: 40,
-              tool_calls: 200,
-              top: sessions
-                ? [
-                    {
-                      id: "s1",
-                      started_at: "2026-10-22T14:00:00.000Z",
-                      tokens: 30_000_000,
-                      cache_read_tokens: 29_000_000,
-                      prompts: 9,
-                      tool_calls: 50,
-                    },
-                  ]
-                : [],
-            }
-          : path === "/limits"
+        : path === "/insights/activity"
+          ? insights(Number(new URLSearchParams(url.split("?")[1]).get("days")), sessions)
+          : path === "/today"
             ? {
-                members: 4,
-                five_hour_used: 19,
-                seven_day_used: 90,
-                five_hour_reporting: 2,
-                seven_day_reporting: 3,
+                sessions,
+                org_sessions: sessions,
+                tokens: 51_700_000,
+                cache_read_tokens: 50_500_000,
+                prompts: 40,
+                tool_calls: 200,
+                top: sessions
+                  ? [
+                      {
+                        id: "s1",
+                        started_at: "2026-10-22T14:00:00.000Z",
+                        tokens: 30_000_000,
+                        cache_read_tokens: 29_000_000,
+                        prompts: 9,
+                        tool_calls: 50,
+                      },
+                    ]
+                  : [],
               }
-            : path === "/members"
+            : path === "/limits"
               ? {
-                  members: [
-                    { name: "Ada", role: "owner", counts_toward_team: true, you: true },
-                    { name: "Sam", role: "member", counts_toward_team: false, you: false },
-                  ],
+                  members: 4,
+                  five_hour_used: 19,
+                  seven_day_used: 90,
+                  five_hour_reporting: 2,
+                  seven_day_reporting: 3,
                 }
-              : path === "/tokens" && init?.method === "POST"
-                ? { token: "sesh_fresh" }
-                : path === "/tokens"
-                  ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
-                  : {};
+              : path === "/members"
+                ? {
+                    members: [
+                      { name: "Ada", role: "owner", counts_toward_team: true, you: true },
+                      { name: "Sam", role: "member", counts_toward_team: false, you: false },
+                    ],
+                  }
+                : path === "/tokens" && init?.method === "POST"
+                  ? { token: "sesh_fresh" }
+                  : path === "/tokens"
+                    ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
+                    : {};
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   });
 }
@@ -116,8 +132,8 @@ describe("signed-in pages", () => {
     expect(container.querySelector(".wordmark")!.getAttribute("href")).toBe("/app");
     expect(container.querySelector(".strapline")!.textContent).toBe("Session ledger · a Craftmill works");
     const tabs = [...container.querySelectorAll(".tab")];
-    expect(tabs.map((a) => a.getAttribute("href"))).toEqual(["/app", "/app/members", "/app/tokens"]);
-    expect(tabs.map((a) => a.getAttribute("aria-current"))).toEqual(["page", null, null]);
+    expect(tabs.map((a) => a.getAttribute("href"))).toEqual(["/app", "/app/insights", "/app/members", "/app/tokens"]);
+    expect(tabs.map((a) => a.getAttribute("aria-current"))).toEqual(["page", null, null, null]);
     expect(container.querySelector(".who")!.textContent).toBe("Ada");
     expect(container.querySelector(".org-switch-button")!.textContent).toBe("alpha");
     expect(container.querySelector("select")).toBeNull();
@@ -178,6 +194,42 @@ describe("signed-in pages", () => {
     expect(container.querySelector("td.hot")).not.toBeNull(); // 30M of 51.7M is over 40% of the day
     expect(container.querySelector('a[href="/app/sessions"]')!.textContent).toBe("All 3 sessions");
     expect(text()).not.toContain("Ada ·".replace("·", "Who"));
+  });
+
+  it("draws today's numbers and a chart per metric, and refetches when the range changes", async () => {
+    const fetchMock = fakeApi();
+    vi.stubGlobal("fetch", fetchMock);
+    history.replaceState(null, "", "/app/insights");
+    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+    const urls = () => fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights"));
+    expect(urls()).toEqual(["/api/insights/activity?days=14"]);
+    expect([...container.querySelectorAll(".figure .num")].map((n) => n.textContent)).toEqual(["14", "2", "1"]);
+    expect(container.querySelectorAll("svg.chart")).toHaveLength(3);
+    expect(container.querySelectorAll("svg.chart")[0]!.querySelectorAll("rect")).toHaveLength(14);
+    expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Insights");
+    const button = [...container.querySelectorAll<HTMLButtonElement>(".range-button")].find(
+      (b) => b.textContent === "28 days",
+    )!;
+    await act(async () => button.click());
+    expect(urls()).toEqual(["/api/insights/activity?days=14", "/api/insights/activity?days=28"]);
+    expect(location.search).toBe("?days=28");
+    expect(container.querySelectorAll("svg.chart")[0]!.querySelectorAll("rect")).toHaveLength(28);
+  });
+
+  it("starts the insights page on the range in the URL", async () => {
+    const fetchMock = fakeApi();
+    vi.stubGlobal("fetch", fetchMock);
+    history.replaceState(null, "", "/app/insights?days=7");
+    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+    expect(container.querySelectorAll("svg.chart rect")).toHaveLength(21);
+    history.replaceState(null, "", "/");
+  });
+
+  it("shows the connect hint on insights when the org has no sessions", async () => {
+    vi.stubGlobal("fetch", fakeApi({ sessions: 0 }));
+    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+    expect(text()).toContain("Sessions appear here once Claude Code sends its first events.");
+    expect(container.querySelector("svg.chart")).toBeNull();
   });
 
   it("says where to start when the org has no sessions at all", async () => {
