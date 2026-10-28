@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/craftmilldev/sesh/main/install.sh | sh
 #
-# It downloads the latest release of the CLI from GitHub to ~/.sesh/sesh.mjs, links it as `sesh` in ~/.local/bin, and runs
+# It downloads the latest release of the CLI from GitHub to ~/.sesh/sesh.mjs, links it as `sesh` in ~/.local/bin (an unrelated file already named sesh is left alone), and runs
 # `sesh setup`, which saves the server and token from your OTel export settings (the OTEL_* env vars from sesh's
 # tokens page, in your shell or Claude Code's settings.json) and makes sesh Claude Code's status line. Set those up
 # first, or run `sesh setup --url <server> --token <token>` afterwards. The installed CLI updates itself from
@@ -50,11 +50,19 @@ mv "$tmp" "$SCRIPT"
 say "Installed sesh $version at $SCRIPT"
 
 # The status line runs the file by Node's absolute path, so it needs no PATH; this link is for you.
-ln -sf "$SCRIPT" "$BIN_DIR/sesh"
-case ":$PATH:" in
-  *":$BIN_DIR:"*) ;;
-  *) say "Note: $BIN_DIR isn't on your PATH, so add it to run \`sesh\`." ;;
-esac
+# Re-running keeps our link; a different file already named sesh is left alone.
+if [ -L "$BIN_DIR/sesh" ] && [ "$(readlink "$BIN_DIR/sesh")" = "$SCRIPT" ]; then
+  say "Linked sesh at $BIN_DIR/sesh"
+elif [ -e "$BIN_DIR/sesh" ] || [ -L "$BIN_DIR/sesh" ]; then
+  say "Note: $BIN_DIR/sesh is already something else, so I left it. Run sesh with \`node $SCRIPT\`, or remove that file and run this again."
+else
+  ln -s "$SCRIPT" "$BIN_DIR/sesh"
+  say "Linked sesh at $BIN_DIR/sesh"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) say "Note: $BIN_DIR isn't on your PATH, so add it to run \`sesh\`." ;;
+  esac
+fi
 
 # With curl | sh, stdin is this script; `sesh setup` asks its one question on the terminal if it has one.
 "$NODE" "$SCRIPT" setup || say "Finish with \`sesh setup\` once the OTel export is set up."
