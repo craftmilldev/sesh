@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parseClaudeCodeLogs } from "../src/claude-code.js";
+import { parseClaudeCodeLogs, type ParsedRecord } from "../src/claude-code.js";
 import type { Db } from "../src/db/index.js";
 import { openTestDb } from "../src/db/testing.js";
 import { uuidv7 } from "../src/ids.js";
-import { parsePending, saveRecords } from "../src/parse.js";
+import { parsePending, saveRecords, type SaveResult } from "../src/parse.js";
 import { storeRawPayload } from "../src/store.js";
 
 /** The shape of a Claude Code OTLP/JSON logs export for one session: two prompts, two API calls, two tool calls. */
@@ -245,6 +245,49 @@ describe("parsing stored payloads", () => {
       ["p-2222", 9, "2026-10-20T15:02:00.000Z"],
     ]);
     expect(await n(`SELECT count(*) AS n FROM sesh.events WHERE prompt_id IS NULL`, [])).toBe(0);
+  });
+
+  it("saves a payload in a fixed number of queries, however many records it holds", async () => {
+    const records = (sessions: number, prompts: number): ParsedRecord[] =>
+      Array.from({ length: sessions }, (_, s) =>
+        Array.from({ length: prompts }, (_, p): ParsedRecord[] => {
+          const at = new Date(Date.UTC(2026, 9, 1, 0, 0, s * 100 + p));
+          const turn = { sessionId: `s${s}`, promptId: `p${p}`, at, backfill: true };
+          return [
+            { type: "prompt", ...turn, promptLength: 10 },
+            ...[0, 1, 2].map((e): ParsedRecord => ({
+              type: "event",
+              ...turn,
+              dedupeKey: `d${p}-${e}`,
+              kind: "api_request",
+              raw: { e },
+            })),
+          ];
+        }).flat(),
+      ).flat();
+    const counted = async (
+      tag: string,
+      recs: ParsedRecord[],
+    ): Promise<{ queries: number; result: SaveResult; orgId: string }> => {
+      const w = await member(tag);
+      let queries = 0;
+      const result = await db.transaction((tx) =>
+        saveRecords({ query: (text, params) => (queries++, tx.query(text, params)) }, w.orgId, w.userId, recs),
+      );
+      return { queries, result, orgId: w.orgId };
+    };
+    const small = await counted("par-batch-small", records(2, 3));
+    const large = await counted("par-batch-large", records(10, 50));
+    expect(large.result).toMatchObject({ added: 1500, turnsAccepted: 500, turnsSkipped: 0 });
+    // One turn check, one session upsert, one prompt upsert, and an event insert per 500 rows.
+    expect(small.queries).toBe(4);
+    expect(large.queries).toBe(6);
+    expect(
+      await n(
+        `SELECT count(*) AS n FROM sesh.events e JOIN sesh.sessions s ON s.id = e.session_id WHERE s.org_id = $1`,
+        [large.orgId],
+      ),
+    ).toBe(1500);
   });
 
   it("keeps tool parameters and error text out of the raw JSON", () => {
