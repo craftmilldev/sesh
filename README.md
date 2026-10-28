@@ -30,7 +30,7 @@ Only JSON logs are parsed so far; protobuf payloads stay raw.
 `/app` is about the team, not individuals, and names no one. It shows today, a UTC day for everyone (`GET /api/today`; `?day=YYYY-MM-DD`
 asks for another): the sessions with a prompt or event today, and the work done today, by when each prompt and event happened, not by when its
 session started: total tokens, cache hit, prompts and tool calls, the team's plan-window pool, and the 5
-heaviest sessions with their share of the day. `/app/sessions` is the full list (`GET /api/sessions?page=N`, 25 a page,
+heaviest sessions with their share of the day. `/app/insights` shows motion over time: tool calls, prompts and active sessions for today and for each UTC day of the last 7, 14 (default) or 28, as a bar chart per metric (`GET /api/insights/activity?days=7|14|28`: oldest first, zero-filled, plus a `today` object; any other `days` is a 400; the range is kept in the page's `?days=`). `/app/sessions` is the full list (`GET /api/sessions?page=N`, 25 a page,
 newest first) and `/app/sessions/<id>` one session with its prompts and events. `/app/members` holds the member list
 (`GET /api/members`), invites, org switching and creation; `/app/tokens` holds the ingest tokens. An org with no sessions shows how to
 connect Claude Code. The UI is in the Craftmill house style (paper, ink, ruled lines; Sorts Mill Goudy and Courier Prime,

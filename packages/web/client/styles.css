@@ -822,3 +822,42 @@ button.ghost:hover:not(:disabled) {
   padding: 0 12px 12px;
   font-size: 14px;
 }
+
+.range {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.range-button {
+  border: 1px solid var(--ink-900);
+  background: transparent;
+  color: var(--ink-900);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.range-button[aria-pressed="true"] {
+  background: var(--ink-900);
+  color: var(--paper-100);
+}
+.chart-block {
+  margin-top: 24px;
+}
+.chart {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+}
+.chart-axis {
+  stroke: var(--ink-900);
+  stroke-width: 1;
+}
+.chart-bar {
+  fill: var(--ink-700);
+}
+.chart-bar.today {
+  fill: var(--madder-600);
+}
+.chart-tick {
+  font: 11px var(--mono);
+  fill: var(--ink-500);
+}

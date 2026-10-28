@@ -72,6 +72,7 @@ export function createWeb(opts: WebOptions = {}) {
   for (const path of [
     "/app",
     "/app/sessions",
+    "/app/insights",
     "/app/settings",
     "/app/members",
     "/app/tokens",

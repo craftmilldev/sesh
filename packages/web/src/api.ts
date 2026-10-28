@@ -281,6 +281,31 @@ export function createApp(opts: AppOptions) {
     });
   });
 
+  // Tool calls, prompts and active sessions for each of the last 7, 14 or 28 UTC days (zero-filled, oldest first),
+  // with today's three numbers. Counted by when each prompt and event happened.
+  scoped.get("/insights/activity", async (c) => {
+    const { user, org } = c.var;
+    const raw = c.req.query("days") ?? "";
+    const days = Number(raw);
+    if (!["7", "14", "28"].includes(raw)) {
+      await metrics.capture("insights_rejected", user.id, { reason: "invalid_days" });
+      return fail(c, 400, "invalid_days", "days must be 7, 14 or 28.");
+    }
+    const db = await opts.getDb();
+    const rows = await store.dailyActivity(db, org.id, utcDay(now()).start, days);
+    const [orgSessions] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`, [
+      org.id,
+    ]);
+    const last = rows.at(-1)!;
+    const today = { tool_calls: last.tool_calls, prompts: last.prompts, active_sessions: last.active_sessions };
+    await metrics.capture("insights_viewed", user.id, {
+      days,
+      empty: rows.every((r) => !r.prompts && !r.tool_calls),
+      org_empty: Number(orgSessions!.n) === 0,
+    });
+    return c.json({ days: rows, today, org_sessions: Number(orgSessions!.n) });
+  });
+
   // The org's members, by name and role, with `you` on the signed-in user's row.
   scoped.get("/members", async (c) => {
     const { user, org } = c.var;
