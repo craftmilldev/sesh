@@ -56,6 +56,16 @@ function paceDays(days: number) {
   };
 }
 
+/** The limit-hits endpoint's answer: one member on the first day, two on the last. */
+function limitHitDays(days: number) {
+  return {
+    days: Array.from({ length: days }, (_, i) => ({
+      day: new Date(Date.UTC(2026, 9, 27 - (days - 1 - i))).toISOString().slice(0, 10),
+      members: i === days - 1 ? 2 : i === 0 ? 1 : 0,
+    })),
+  };
+}
+
 /** A fake API where /me reports whichever org the last switch chose. */
 function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
   let active = opts.observer ? { ...orgs[0]!, counts_toward_team: false } : orgs[0]!;
@@ -77,51 +87,53 @@ function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
     const body =
       path === "/me"
         ? { user: { name: "Ada" }, org: active, orgs, ingest_endpoint: "https://sesh.test" }
-        : path === "/insights/pace"
-          ? paceDays(Number(new URLSearchParams(url.split("?")[1]).get("days")))
-          : path === "/insights/activity"
-            ? insights(Number(new URLSearchParams(url.split("?")[1]).get("days")), sessions)
-            : path === "/today"
-              ? {
-                  sessions,
-                  org_sessions: sessions,
-                  tokens: 51_700_000,
-                  cache_read_tokens: 50_500_000,
-                  prompts: 40,
-                  tool_calls: 200,
-                  top: sessions
-                    ? [
-                        {
-                          id: "s1",
-                          started_at: "2026-10-22T14:00:00.000Z",
-                          tokens: 30_000_000,
-                          cache_read_tokens: 29_000_000,
-                          prompts: 9,
-                          tool_calls: 50,
-                        },
-                      ]
-                    : [],
-                }
-              : path === "/limits"
+        : path === "/insights/limit-hits"
+          ? limitHitDays(Number(new URLSearchParams(url.split("?")[1]).get("days")))
+          : path === "/insights/pace"
+            ? paceDays(Number(new URLSearchParams(url.split("?")[1]).get("days")))
+            : path === "/insights/activity"
+              ? insights(Number(new URLSearchParams(url.split("?")[1]).get("days")), sessions)
+              : path === "/today"
                 ? {
-                    members: 4,
-                    five_hour_used: 19,
-                    seven_day_used: 90,
-                    five_hour_reporting: 2,
-                    seven_day_reporting: 3,
+                    sessions,
+                    org_sessions: sessions,
+                    tokens: 51_700_000,
+                    cache_read_tokens: 50_500_000,
+                    prompts: 40,
+                    tool_calls: 200,
+                    top: sessions
+                      ? [
+                          {
+                            id: "s1",
+                            started_at: "2026-10-22T14:00:00.000Z",
+                            tokens: 30_000_000,
+                            cache_read_tokens: 29_000_000,
+                            prompts: 9,
+                            tool_calls: 50,
+                          },
+                        ]
+                      : [],
                   }
-                : path === "/members"
+                : path === "/limits"
                   ? {
-                      members: [
-                        { name: "Ada", role: "owner", counts_toward_team: true, you: true },
-                        { name: "Sam", role: "member", counts_toward_team: false, you: false },
-                      ],
+                      members: 4,
+                      five_hour_used: 19,
+                      seven_day_used: 90,
+                      five_hour_reporting: 2,
+                      seven_day_reporting: 3,
                     }
-                  : path === "/tokens" && init?.method === "POST"
-                    ? { token: "sesh_fresh" }
-                    : path === "/tokens"
-                      ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
-                      : {};
+                  : path === "/members"
+                    ? {
+                        members: [
+                          { name: "Ada", role: "owner", counts_toward_team: true, you: true },
+                          { name: "Sam", role: "member", counts_toward_team: false, you: false },
+                        ],
+                      }
+                    : path === "/tokens" && init?.method === "POST"
+                      ? { token: "sesh_fresh" }
+                      : path === "/tokens"
+                        ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
+                        : {};
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   });
 }
@@ -241,7 +253,7 @@ describe("signed-in pages", () => {
     const urls = () => fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights/activity"));
     expect(urls()).toEqual(["/api/insights/activity?days=14"]);
     expect([...container.querySelectorAll(".figure .num")].map((n) => n.textContent)).toEqual(["2", "14", "1", "7"]);
-    expect(container.querySelectorAll("svg.chart")).toHaveLength(2); // activity and plan pace
+    expect(container.querySelectorAll("svg.chart")).toHaveLength(3); // activity, plan pace and limit hits
     expect(lines()).toEqual(["prompts", "tools", "sessions"]);
     expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(14);
     expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Insights");
@@ -433,6 +445,31 @@ describe("signed-in pages", () => {
       "/api/insights/pace?days=28",
     ]);
     expect(chart().querySelectorAll('[data-series="pace"] .chart-dot')).toHaveLength(27);
+    history.replaceState(null, "", "/");
+  });
+
+  it("draws 5h limit hits as bars with today's number, and follows the range", async () => {
+    const fetchMock = fakeApi();
+    vi.stubGlobal("fetch", fetchMock);
+    history.replaceState(null, "", "/app/insights?days=7");
+    await open();
+    const figure = () => container.querySelectorAll<HTMLElement>("figure.chart-figure")[2]!;
+    expect(figure().querySelector(".chart-title")!.textContent).toBe("5h limit reached");
+    expect(figure().querySelector(".chart-today")!.textContent).toBe("2 today");
+    const bars = [...figure().querySelectorAll(".chart-point")];
+    expect(bars).toHaveLength(7);
+    expect(bars[0]!.getAttribute("aria-label")).toBe("Wed Oct 21: 5h limit reached: 1");
+    expect(bars[3]!.getAttribute("aria-label")).toBe("Sat Oct 24: 5h limit reached: 0");
+    expect(bars[6]!.getAttribute("aria-label")).toBe("Tue Oct 27: 5h limit reached: 2");
+    const button = [...container.querySelectorAll<HTMLButtonElement>(".range-button")].find(
+      (b) => b.textContent === "28 days",
+    )!;
+    await act(async () => button.click());
+    expect(fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights/limit-hits"))).toEqual([
+      "/api/insights/limit-hits?days=7",
+      "/api/insights/limit-hits?days=28",
+    ]);
+    expect(figure().querySelectorAll(".chart-point")).toHaveLength(28);
     history.replaceState(null, "", "/");
   });
 

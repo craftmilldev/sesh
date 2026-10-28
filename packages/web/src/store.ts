@@ -476,6 +476,26 @@ export async function planPace(db: Db, orgId: string, lastStart: Date, days: num
   return rows;
 }
 
+/**
+ * For each of `days` UTC days ending with the one that starts at `lastStart` (oldest first, zero-filled): how many
+ * distinct members have a snapshot captured that day whose 5h used percent reached 100. Counts only; it names no one.
+ */
+export async function limitHits(db: Db, orgId: string, lastStart: Date, days: number) {
+  const first = new Date(lastStart.getTime() - (days - 1) * DAY_MS);
+  const rows = await db.query<{ day: string; n: string }>(
+    `SELECT to_char(captured_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, count(DISTINCT user_id) AS n
+     FROM sesh.limit_snapshots
+     WHERE org_id = $1 AND captured_at >= $2 AND captured_at < $3 AND five_hour_pct >= 100
+     GROUP BY 1`,
+    [orgId, first, new Date(lastStart.getTime() + DAY_MS)],
+  );
+  const byDay = new Map(rows.map((r) => [r.day, Number(r.n)]));
+  return Array.from({ length: days }, (_, i) => {
+    const day = new Date(first.getTime() + i * DAY_MS).toISOString().slice(0, 10);
+    return { day, members: byDay.get(day) ?? 0 };
+  });
+}
+
 export const SESSIONS_PAGE_SIZE = 25;
 
 export interface SessionRow {

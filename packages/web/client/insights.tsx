@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MultiLineChart, type Series } from "./chart.js";
+import { BarChart, MultiLineChart, type Series } from "./chart.js";
 import { num } from "./fmt.js";
 import { message } from "./layout.js";
 import { api } from "./session.js";
@@ -21,6 +21,10 @@ interface Activity {
 
 interface Pace {
   days: { day: string; pace: number | null }[];
+}
+
+interface LimitHits {
+  days: { day: string; members: number }[];
 }
 
 const RANGES = [7, 14, 28];
@@ -70,7 +74,14 @@ export function Insights() {
   const [data, setData] = useState<Activity>();
   const [pace, setPace] = useState<Pace>();
   const [paceError, setPaceError] = useState<string>();
+  const [hits, setHits] = useState<LimitHits>();
+  const [hitsError, setHitsError] = useState<string>();
   const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    setHitsError(undefined);
+    api<LimitHits>(`/insights/limit-hits?days=${days}`).then(setHits, (e) => setHitsError(message(e)));
+  }, [days]);
 
   useEffect(() => {
     setError(undefined);
@@ -215,6 +226,18 @@ export function Insights() {
                         values: pace.days.map((d) => d.pace),
                       },
                     ]}
+                  />
+                )
+              )}
+            </div>
+            <div className="chart-block">
+              {hitsError ? (
+                <p className="error">{hitsError}</p>
+              ) : (
+                hits && (
+                  <BarChart
+                    title="5h limit reached"
+                    values={hits.days.map((d) => ({ day: d.day, value: d.members }))}
                   />
                 )
               )}

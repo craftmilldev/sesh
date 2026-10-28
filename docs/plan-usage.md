@@ -19,3 +19,5 @@ instead: a `plan.usage.utilization` gauge (0 to 1) with one point per window (`p
 become one `sesh.limit_snapshots` row (percent = utilization x 100); other windows are ignored. JSON metrics only.
 
 `GET /api/insights/pace?days=7|14|28` gives the same pace for each of the last UTC days, as it stood at the end of that day (the computation takes an as-of time: only readings captured up to it count, each member's highest reading per window), `null` where nothing was expected; today's value is as of now. `GET /api/limits` is the same computation as of now.
+
+`GET /api/insights/limit-hits?days=7|14|28` gives, for each of the last UTC days (oldest first, zero-filled, the last is today), how many distinct members have a snapshot captured that day with the 5h used percent at 100 or more (`{ days: [{ day, members }] }`, counts only, no names); `/app/insights` draws it as a "5h limit reached" bar chart with today's count.

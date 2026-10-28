@@ -391,6 +391,83 @@ describe("insights pace", () => {
   });
 });
 
+describe("GET /api/insights/limit-hits", () => {
+  const NOW = new Date("2026-10-27T15:00:00.000Z");
+  it("counts each member once per UTC day they reached 100% on the 5h window, and nobody below it", async () => {
+    const t = setupApp(db, () => NOW);
+    const session = await t.signIn("hits@example.com");
+    const me = (await (await t.call("/me", { session })).json()) as { org: { id: string } };
+    const orgId = me.org.id;
+    const users: string[] = [];
+    for (const n of [1, 2, 3]) {
+      const [u] = await db.query<{ id: string }>(
+        `INSERT INTO sesh.users (id, email, name) VALUES ($1, $2, $3) RETURNING id`,
+        [uuidv7(), `hits${n}@example.com`, `Hits ${n}`],
+      );
+      await db.query(`INSERT INTO sesh.org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`, [orgId, u!.id]);
+      users.push(u!.id);
+    }
+    const resets = new Date(NOW.getTime() + 3_600_000);
+    const read = (user: string, pct: number, at: string, sid = "s") =>
+      storeLimitSnapshot(
+        db,
+        { orgId, userId: user },
+        {
+          sessionId: sid,
+          fiveHourPct: pct,
+          fiveHourResetsAt: resets,
+          sevenDayPct: null,
+          sevenDayResetsAt: null,
+          capturedAt: new Date(at),
+        },
+      );
+    // Two members on the 25th, one of them three times; one on the 26th; 99.9 never counts.
+    await read(users[0]!, 100, "2026-10-25T01:00:00Z");
+    await read(users[0]!, 100, "2026-10-25T09:00:00Z", "other");
+    await read(users[0]!, 100, "2026-10-25T23:59:59Z");
+    await read(users[1]!, 104, "2026-10-25T12:00:00Z");
+    await read(users[1]!, 99.9, "2026-10-26T12:00:00Z");
+    await read(users[2]!, 100, "2026-10-26T00:00:00Z");
+
+    const res = await t.call("/insights/limit-hits?days=7", { session });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { days: { day: string; members: number }[] };
+    expect(body.days.map((d) => [d.day, d.members])).toEqual([
+      ["2026-10-21", 0],
+      ["2026-10-22", 0],
+      ["2026-10-23", 0],
+      ["2026-10-24", 0],
+      ["2026-10-25", 2],
+      ["2026-10-26", 1],
+      ["2026-10-27", 0],
+    ]);
+    expect(JSON.stringify(body)).not.toContain("Hits");
+    expect(t.events.at(-1)).toMatchObject({
+      event: "insights_limit_hits_viewed",
+      properties: { days: 7, empty: false },
+    });
+  });
+
+  it("is zero all the way when nobody hit it, and rejects other ranges", async () => {
+    const t = setupApp(db, () => NOW);
+    const session = await t.signIn("hits-empty@example.com");
+    const body = (await (await t.call("/insights/limit-hits?days=28", { session })).json()) as {
+      days: { members: number }[];
+    };
+    expect(body.days).toHaveLength(28);
+    expect(body.days.every((d) => d.members === 0)).toBe(true);
+    expect(t.events.at(-1)).toMatchObject({
+      event: "insights_limit_hits_viewed",
+      properties: { days: 28, empty: true },
+    });
+    for (const bad of ["", "?days=10"]) {
+      const res = await t.call(`/insights/limit-hits${bad}`, { session });
+      expect(res.status).toBe(400);
+    }
+    expect(t.events.filter((e) => e.event === "insights_limit_hits_rejected")).toHaveLength(2);
+  });
+});
+
 describe("plan usage over OTLP metrics", () => {
   async function setup(email: string) {
     const t = setupApp(db);

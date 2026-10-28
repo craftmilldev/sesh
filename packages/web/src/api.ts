@@ -349,6 +349,23 @@ export function createApp(opts: AppOptions) {
     return c.json({ days: days.map((d) => ({ day: d.day, pace: d.seven_day_pace })) });
   });
 
+  // How many members reached the 5h limit (a snapshot at 100% or more) on each of the last 7, 14 or 28 UTC days,
+  // oldest first, zero-filled; the last day is today. Counts only. Names no one.
+  scoped.get("/insights/limit-hits", async (c) => {
+    const { user, org } = c.var;
+    const raw = c.req.query("days") ?? "";
+    if (!["7", "14", "28"].includes(raw)) {
+      await metrics.capture("insights_limit_hits_rejected", user.id, { reason: "invalid_days" });
+      return fail(c, 400, "invalid_days", "days must be 7, 14 or 28.");
+    }
+    const days = await store.limitHits(await opts.getDb(), org.id, utcDay(now()).start, Number(raw));
+    await metrics.capture("insights_limit_hits_viewed", user.id, {
+      days: Number(raw),
+      empty: days.every((d) => d.members === 0),
+    });
+    return c.json({ days });
+  });
+
   // The org's members, by name and role, with `you` on the signed-in user's row.
   scoped.get("/members", async (c) => {
     const { user, org } = c.var;
