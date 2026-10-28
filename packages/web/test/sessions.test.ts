@@ -286,6 +286,30 @@ describe("insights activity", () => {
     expect(wide.days).toHaveLength(28);
     expect(wide.days.find((d) => d.day === "2026-10-10")).toMatchObject({ prompts: 1, active_sessions: 1 });
     expect(t.events.filter((e) => e.event === "insights_viewed")).toHaveLength(2);
+    // By weekday over the 28 days (each weekday four times, zero days counted): Mon had nothing, so no ratio.
+    const dow = (wide as unknown as { by_dow: Record<string, unknown>[] }).by_dow;
+    expect(dow.map((d) => d.dow)).toEqual(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]);
+    const avg = (d: Record<string, unknown>) => [d.tool_calls, d.prompts, d.active_sessions, d.tool_calls_per_prompt];
+    expect(dow.map(avg)).toEqual([
+      [0, 0, 0, null],
+      [0.5, 0.5, 0.5, 1],
+      [0, 0, 0, null],
+      [0.5, 0.25, 0.25, 2],
+      [0, 0, 0, null],
+      [0.25, 0.25, 0.5, 1],
+      [0, 0, 0, null],
+    ]);
+    // Over 7 days each weekday is one day, so the average is that day's count.
+    const week = (body as unknown as { by_dow: Record<string, unknown>[] }).by_dow;
+    expect(week.map(avg)).toEqual([
+      [0, 0, 0, null],
+      [2, 2, 2, 1],
+      [0, 0, 0, null],
+      [2, 1, 1, 2],
+      [0, 0, 0, null],
+      [1, 0, 1, null],
+      [0, 0, 0, null],
+    ]);
   });
 
   it("is all zeros for an empty org, and rejects other ranges, recording both", async () => {

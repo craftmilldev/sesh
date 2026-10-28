@@ -36,7 +36,14 @@ function insights(days: number, sessions: number) {
     active_sessions: last.active_sessions,
     tool_calls_per_prompt: last.tool_calls_per_prompt,
   };
-  return { days: rows, today, org_sessions: sessions };
+  const by_dow = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((dow, i) => ({
+    dow,
+    tool_calls: i + 1,
+    prompts: 2,
+    active_sessions: 1,
+    tool_calls_per_prompt: (i + 1) / 2,
+  }));
+  return { days: rows, by_dow, today, org_sessions: sessions };
 }
 
 /** A fake API where /me reports whichever org the last switch chose. */
@@ -352,6 +359,44 @@ describe("signed-in pages", () => {
     const ticks = [...container.querySelectorAll(".chart-tick.day")].map((t) => t.textContent);
     expect(ticks).toContain("S1Nov");
     expect(ticks.at(-1)).toBe("M2today");
+  });
+
+  it("switches the chart between the daily series and the weekday averages, keeping the choice in the URL", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    history.replaceState(null, "", "/app/insights");
+    await open();
+    const view = (name: string) =>
+      [...container.querySelectorAll<HTMLButtonElement>('[aria-label="View"] button')].find(
+        (b) => b.textContent === name,
+      )!;
+    expect(view("By day").getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(14);
+    await act(async () => view("By weekday").click());
+    expect(location.search).toBe("?by=weekday");
+    expect(view("By weekday").getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(7);
+    expect([...container.querySelectorAll(".chart-tick.day")].map((t) => t.textContent)).toEqual([
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri",
+      "Sat",
+      "Sun",
+    ]);
+    expect(container.querySelector(".chart-point.today")).toBeNull();
+    expect(container.querySelector(".chart-point")!.getAttribute("aria-label")).toBe(
+      "Mon: Prompts: 2, Tool calls: 1, Active sessions: 1",
+    );
+    await act(async () => view("By day").click());
+    expect(location.search).toBe("");
+    expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(14);
+    history.replaceState(null, "", "/app/insights?by=weekday");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await open();
+    expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(7);
+    history.replaceState(null, "", "/");
   });
 
   it("starts the insights page on the range in the URL", async () => {

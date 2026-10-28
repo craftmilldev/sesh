@@ -13,6 +13,8 @@ interface Counts {
 }
 interface Activity {
   days: (Counts & { day: string })[];
+  /** Average per day for each weekday, Mon..Sun. */
+  by_dow: (Counts & { dow: string })[];
   today: Counts;
   org_sessions: number;
 }
@@ -28,6 +30,9 @@ const METRICS: { id: string; key: keyof Counts; label: string; className: string
 ];
 const DEFAULT_METRICS = ["prompts", "tools", "sessions"];
 
+/** `by=weekday` in the URL shows the weekday averages; anything else the daily series. */
+const byWeekdayFromUrl = () => new URLSearchParams(location.search).get("by") === "weekday";
+
 /** The range in the URL (`?days=7|14|28`), else the default. */
 function rangeFromUrl(): number {
   const days = Number(new URLSearchParams(location.search).get("days"));
@@ -42,8 +47,9 @@ function metricsFromUrl(): string[] {
 }
 
 /** Keeps the URL in step with the page: only what differs from the defaults is written. */
-function writeUrl(days: number, metrics: string[]) {
+function writeUrl(days: number, metrics: string[], weekday: boolean) {
   const parts: string[] = [];
+  if (weekday) parts.push("by=weekday");
   if (days !== DEFAULT_RANGE) parts.push(`days=${days}`);
   if (metrics.join() !== DEFAULT_METRICS.join()) parts.push(`metrics=${metrics.join(",")}`);
   history.replaceState(null, "", parts.length ? `?${parts.join("&")}` : location.pathname);
@@ -56,6 +62,7 @@ const perPrompt = (n: number | null) => (n === null ? "–" : num(n));
 export function Insights() {
   const [days, setDays] = useState(rangeFromUrl);
   const [on, setOn] = useState(metricsFromUrl);
+  const [weekday, setWeekday] = useState(byWeekdayFromUrl);
   const [data, setData] = useState<Activity>();
   const [error, setError] = useState<string>();
 
@@ -65,8 +72,13 @@ export function Insights() {
   }, [days]);
 
   function pick(n: number) {
-    writeUrl(n, on);
+    writeUrl(n, on, weekday);
     setDays(n);
+  }
+
+  function pickView(next: boolean) {
+    writeUrl(days, on, next);
+    setWeekday(next);
   }
 
   function toggle(id: string) {
@@ -74,7 +86,7 @@ export function Insights() {
       ? on.filter((m) => m !== id)
       : METRICS.map((m) => m.id).filter((m) => m === id || on.includes(m));
     if (next.length === 0) return; // at least one stays on
-    writeUrl(days, next);
+    writeUrl(days, next, weekday);
     setOn(next);
   }
 
@@ -84,7 +96,7 @@ export function Insights() {
         label: m.label,
         axis: m.axis,
         className: m.className,
-        values: data.days.map((d) => d[m.key]),
+        values: (weekday ? data.by_dow : data.days).map((d) => d[m.key]),
       }))
     : [];
 
@@ -132,6 +144,19 @@ export function Insights() {
                 </button>
               ))}
             </div>
+            <div className="range" role="group" aria-label="View">
+              {[false, true].map((w) => (
+                <button
+                  key={String(w)}
+                  type="button"
+                  className="range-button"
+                  aria-pressed={w === weekday}
+                  onClick={() => pickView(w)}
+                >
+                  {w ? "By weekday" : "By day"}
+                </button>
+              ))}
+            </div>
             <div className="chips" role="group" aria-label="Metrics">
               {METRICS.map((m) => (
                 <button
@@ -150,7 +175,16 @@ export function Insights() {
               ))}
             </div>
             <div className="chart-block">
-              <MultiLineChart title="Activity" days={data.days.map((d) => d.day)} series={series} />
+              {weekday ? (
+                <MultiLineChart
+                  title="Average per weekday"
+                  days={data.by_dow.map((d) => d.dow)}
+                  names={data.by_dow.map((d) => d.dow)}
+                  series={series}
+                />
+              ) : (
+                <MultiLineChart title="Activity" days={data.days.map((d) => d.day)} series={series} />
+              )}
             </div>
           </section>
         </>
