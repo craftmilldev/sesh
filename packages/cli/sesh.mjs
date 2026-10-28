@@ -32,6 +32,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 export const VERSION = "0.1.0";
@@ -590,7 +591,7 @@ export function parseTranscript(text, fallbackId = null) {
   };
 }
 
-/** The sessions in Claude Code's transcripts, newest first. Skips files that are empty, unreadable or not transcripts. */
+/** The sessions in Claude Code's transcripts, newest first, each with the `files` it spans. Skips files that are empty, unreadable or not transcripts. */
 export function scanSessions(env = process.env) {
   const root = join(claudeDir(env), "projects");
   const sessions = new Map();
@@ -608,9 +609,10 @@ export function scanSessions(env = process.env) {
     const known = sessions.get(found.id);
     if (!known) {
       // The project directory's name stands in for a transcript with no cwd.
-      sessions.set(found.id, { ...found, project: found.project ?? basename(dirname(file)) });
+      sessions.set(found.id, { ...found, project: found.project ?? basename(dirname(file)), files: [file] });
       continue;
     }
+    known.files.push(file);
     known.prompts += found.prompts;
     known.tokens += found.tokens;
     if (found.started_at && (!known.started_at || found.started_at < known.started_at))
@@ -634,11 +636,16 @@ function sessionsCommand() {
 /** Under the server's 4 MB cap on one ingest request, with room for the envelope. */
 const MAX_PAYLOAD_BYTES = 3_500_000;
 const UPLOAD_TIMEOUT_MS = 60_000;
+/** How many sessions a bulk upload sends at once. */
+const UPLOAD_CONCURRENCY = 8;
 
-/** Every entry of one session across its transcripts (the main one and its subagents'), oldest first. */
-export function readSessionEntries(sessionId, env = process.env) {
+/**
+ * Every entry of one session across its transcripts (the main one and its subagents'), oldest first. `files` are the
+ * transcripts to read, as `scanSessions` found them; without them every transcript on disk is searched.
+ */
+export function readSessionEntries(sessionId, env = process.env, files = null) {
   const entries = [];
-  for (const file of findTranscripts(join(claudeDir(env), "projects"))) {
+  for (const file of files ?? findTranscripts(join(claudeDir(env), "projects"))) {
     let text;
     try {
       text = readFileSync(file, "utf8");
@@ -829,8 +836,8 @@ class FatalUpload extends Error {}
  * Sends one session's payloads. Returns `{ events, turns, requests, accepted, skipped }`: accepted and skipped are the
  * turns the server stored and the ones it already had, or null when the server didn't say (an older one).
  */
-async function sendSession(sessionId, to, fetchFn) {
-  const entries = readSessionEntries(sessionId);
+async function sendSession(sessionId, to, fetchFn, files = null) {
+  const entries = readSessionEntries(sessionId, process.env, files);
   if (!entries.length)
     throw new Error(`No Claude Code session ${sessionId} found in ${join(claudeDir(), "projects")}.`);
   const turns = buildTurns(entries, sessionId);
@@ -846,8 +853,12 @@ async function sendSession(sessionId, to, fetchFn) {
     try {
       res = await fetchFn(url, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${to.token}` },
-        body: JSON.stringify(payload),
+        headers: {
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+          authorization: `Bearer ${to.token}`,
+        },
+        body: gzipSync(JSON.stringify(payload)),
         signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
       });
     } catch (err) {
@@ -939,15 +950,65 @@ async function chooseSessions(sessions) {
   }
 }
 
+/** What a session's transcripts look like now: if it is unchanged since the last upload, there is nothing to send. */
+function sessionSignature(files) {
+  const hash = createHash("sha256");
+  for (const file of [...files].sort()) {
+    try {
+      const st = statSync(file);
+      hash.update(`${file}:${st.size}:${st.mtimeMs}\n`);
+    } catch {
+      hash.update(`${file}:gone\n`);
+    }
+  }
+  return hash.digest("hex");
+}
+
+/** The sessions already uploaded to this server: `{ [sessionId]: signature }`, kept in ~/.sesh/uploaded.json. */
+function readLedger(origin, env = process.env) {
+  try {
+    const all = JSON.parse(readFileSync(join(stateDir(env), "uploaded.json"), "utf8"));
+    return all?.[origin] && typeof all[origin] === "object" ? all[origin] : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLedger(origin, ledger, env = process.env) {
+  const file = join(stateDir(env), "uploaded.json");
+  let all = {};
+  try {
+    all = JSON.parse(readFileSync(file, "utf8")) ?? {};
+  } catch {
+    // no ledger yet
+  }
+  mkdirSync(stateDir(env), { recursive: true });
+  writeJsonAtomic(file, { ...all, [origin]: ledger }, 0o600);
+}
+
+const clock = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+};
+
+/** A progress line for a bulk upload: how many are done, how long it has run and how long is left. */
+export function progressLine(done, total, elapsedMs) {
+  const left = done > 0 && done < total ? `, about ${clock((elapsedMs / done) * (total - done))} left` : "";
+  return `${done}/${total} sessions (${clock(elapsedMs)} so far${left})`;
+}
+
 const UPLOAD_USAGE =
-  "Usage: sesh upload <session-id> | --all | --since <date> | --project <text>  [--dry-run]\n" +
+  "Usage: sesh upload <session-id> | --all | --since <date> | --project <text>  [--dry-run] [--force]\n" +
   "`sesh sessions` lists the ids; `sesh upload` alone lets you pick on a terminal.";
 
 /** The summary line of a bulk upload. */
-export function uploadSummary({ sent, accepted, skipped, failed, events }) {
+export function uploadSummary({ sent, accepted, skipped, failed, events, unchanged = 0 }) {
   return (
     `Sent ${sent} ${sent === 1 ? "session" : "sessions"} (${events} events): ${accepted} turns accepted, ` +
-    `${skipped} already known, ${failed} ${failed === 1 ? "session" : "sessions"} failed.`
+    `${skipped} already known, ${failed} ${failed === 1 ? "session" : "sessions"} failed.` +
+    (unchanged
+      ? ` ${unchanged} already uploaded ${unchanged === 1 ? "was" : "were"} left out (--force sends them again).`
+      : "")
   );
 }
 
@@ -981,7 +1042,7 @@ async function uploadCommand(args, { fetchFn = fetch } = {}) {
   if (dryRun) {
     let events = 0;
     for (const s of chosen) {
-      const entries = readSessionEntries(s.id);
+      const entries = readSessionEntries(s.id, process.env, s.files ?? null);
       if (!entries.length) throw new Error(`No Claude Code session ${s.id} found in ${join(claudeDir(), "projects")}.`);
       const turns = buildTurns(entries, s.id);
       const built = buildPayloads(turns, s.id);
@@ -999,7 +1060,7 @@ async function uploadCommand(args, { fetchFn = fetch } = {}) {
 
   if (chosen.length === 1 && ids.length) {
     // One named session: a failure is the command's failure.
-    const r = await sendSession(chosen[0].id, to, fetchFn);
+    const r = await sendSession(chosen[0].id, to, fetchFn, chosen[0].files ?? null);
     const server =
       r.accepted === null
         ? "Turns sesh already has are skipped by the server."
@@ -1011,27 +1072,59 @@ async function uploadCommand(args, { fetchFn = fetch } = {}) {
     return;
   }
 
-  const total = { sent: 0, accepted: 0, skipped: 0, failed: 0, events: 0 };
-  for (const [i, s] of chosen.entries()) {
-    const label = `[${i + 1}/${chosen.length}] ${s.id}`;
-    try {
-      const r = await sendSession(s.id, to, fetchFn);
-      total.sent++;
-      total.events += r.events;
-      total.accepted += r.accepted ?? 0;
-      total.skipped += r.skipped ?? 0;
-      console.log(
-        `${label}: ${r.events} events` +
-          (r.accepted === null ? "" : `, ${r.accepted} turns accepted, ${r.skipped} already known`),
-      );
-    } catch (err) {
-      total.failed++;
-      console.error(`${label}: failed: ${err instanceof Error ? err.message : String(err)}`);
-      if (err instanceof FatalUpload) {
-        console.error(`Stopping: the ${chosen.length - i - 1} sessions left would fail the same way.`);
-        break;
+  // A session whose transcripts haven't changed since it was last uploaded is left out, unless --force.
+  const origin = new URL(to.url).origin;
+  const ledger = readLedger(origin);
+  const signatures = new Map(chosen.map((s) => [s.id, sessionSignature(s.files ?? [])]));
+  const force = args.includes("--force");
+  const todo = force ? chosen : chosen.filter((s) => ledger[s.id] !== signatures.get(s.id));
+  const total = { sent: 0, accepted: 0, skipped: 0, failed: 0, events: 0, unchanged: chosen.length - todo.length };
+  if (total.unchanged)
+    console.error(`${total.unchanged} of ${chosen.length} sessions are already uploaded and unchanged; skipping them.`);
+
+  const started = Date.now();
+  const live = process.stderr.isTTY;
+  let done = 0;
+  let stopped = false;
+  const progress = () => {
+    if (live) process.stderr.write(`\r\x1b[K${progressLine(done, todo.length, Date.now() - started)}`);
+    else if (done === todo.length || done % 25 === 0)
+      console.error(progressLine(done, todo.length, Date.now() - started));
+  };
+  // Failures print on their own line, above the progress line.
+  const say = (text) => {
+    if (live) process.stderr.write("\r\x1b[K");
+    console.error(text);
+  };
+  let next = 0;
+  const worker = async () => {
+    while (!stopped && next < todo.length) {
+      const s = todo[next++];
+      try {
+        const r = await sendSession(s.id, to, fetchFn, s.files ?? null);
+        total.sent++;
+        total.events += r.events;
+        total.accepted += r.accepted ?? 0;
+        total.skipped += r.skipped ?? 0;
+        ledger[s.id] = signatures.get(s.id);
+      } catch (err) {
+        total.failed++;
+        say(`${s.id}: failed: ${err instanceof Error ? err.message : String(err)}`);
+        if (err instanceof FatalUpload) {
+          stopped = true;
+          say(`Stopping: the sessions left would fail the same way.`);
+        }
       }
+      done++;
+      progress();
+      if (done % 25 === 0) writeLedger(origin, ledger);
     }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, todo.length) }, worker));
+  } finally {
+    writeLedger(origin, ledger);
+    if (live && done) process.stderr.write("\n");
   }
   console.log(uploadSummary(total));
   if (total.failed) process.exitCode = 1;
@@ -1102,7 +1195,8 @@ const HELP = `sesh ${VERSION}: session insights for Claude Code teams
   sesh sessions            list the Claude Code sessions on this machine (local files only, no network)
   sesh upload <session-id> send one past session to sesh as OTel logs (--dry-run prints them, sends nothing)
   sesh upload              pick sessions from a list (on a terminal), or choose them with --all, --since <date>,
-                           --project <text>; safe to run again, sesh skips turns it already has
+                           --project <text>; safe to run again: sessions already uploaded and unchanged are skipped
+                           (--force sends them again) and the server skips turns it already has
   sesh setup [--replace]   save the server and token (from the OTel settings, or --url and --token) and make sesh
                            Claude Code's status line
   sesh statusline on|off   make sesh Claude Code's status line, or remove it

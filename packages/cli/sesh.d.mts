@@ -39,6 +39,8 @@ export interface SessionSummary {
   project: string | null;
   prompts: number;
   tokens: number;
+  /** The transcript files the session spans (set by `scanSessions`). */
+  files?: string[];
 }
 /** What one transcript says about its session, or null when it has no entries. Never includes prompt text. */
 export function parseTranscript(text: string, fallbackId?: string | null): SessionSummary | null;
@@ -55,7 +57,11 @@ export interface Turn {
   records: TurnRecord[];
 }
 /** Every entry of one session across its transcripts, oldest first, each with `_at` (ms). */
-export function readSessionEntries(sessionId: string, env?: Record<string, string | undefined>): TranscriptEntry[];
+export function readSessionEntries(
+  sessionId: string,
+  env?: Record<string, string | undefined>,
+  files?: string[] | null,
+): TranscriptEntry[];
 /** The turns of a session as the events Claude Code would have logged live. Never includes prompt text. */
 export function buildTurns(entries: TranscriptEntry[], sessionId: string): Turn[];
 /** OTLP/JSON logs payloads (`sesh.source=backfill`), each under `maxBytes`, broken between turns only. */
@@ -81,4 +87,7 @@ export function uploadSummary(t: {
   skipped: number;
   failed: number;
   events: number;
+  unchanged?: number;
 }): string;
+/** A bulk upload's progress: done/total, time so far and time left. */
+export function progressLine(done: number, total: number, elapsedMs: number): string;

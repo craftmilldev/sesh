@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { gunzipSync } from "node:zlib";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   buildPayloads,
@@ -14,6 +15,7 @@ import {
   parseChoice,
   parseInput,
   parseTranscript,
+  progressLine,
   logsUrl,
   readConfig,
   readSessionEntries,
@@ -670,6 +672,20 @@ describe("upload", () => {
     for (const bad of ["0", "6", "4-2", "x", "1-9"]) expect(parseChoice(bad, 5)).toBeNull();
   });
 
+  it("scans the transcript files each session spans, and reads only those", () => {
+    const h = setup();
+    const found = scanSessions(h.env).find((s) => s.id === "s-up")!;
+    expect(found.files).toEqual([join(h.root, ".claude", "projects", "-work-app", "s-up.jsonl")]);
+    expect(readSessionEntries("s-up", h.env, found.files).length).toBe(readSessionEntries("s-up", h.env).length);
+    expect(readSessionEntries("s-up", h.env, [])).toEqual([]);
+  });
+
+  it("shows progress with the time left", () => {
+    expect(progressLine(0, 10, 0)).toBe("0/10 sessions (0s so far)");
+    expect(progressLine(250, 1000, 100_000)).toBe("250/1000 sessions (1m40s so far, about 5m00s left)");
+    expect(progressLine(1000, 1000, 400_000)).toBe("1000/1000 sessions (6m40s so far)");
+  });
+
   it("summarises accepted, skipped and failed", () => {
     expect(uploadSummary({ sent: 2, accepted: 5, skipped: 3, failed: 1, events: 40 })).toBe(
       "Sent 2 sessions (40 events): 5 turns accepted, 3 already known, 1 session failed.",
@@ -679,9 +695,11 @@ describe("upload", () => {
   it("uploads the chosen sessions, reports accepted and skipped, and goes on past a failure", async () => {
     const known = new Set<string>();
     const server = createServer((req, res) => {
-      let body = "";
-      req.on("data", (c) => (body += c));
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
       req.on("end", () => {
+        expect(req.headers["content-encoding"]).toBe("gzip");
+        const body = gunzipSync(Buffer.concat(chunks)).toString("utf8");
         if (body.includes('"s-bad"')) {
           res.statusCode = 500;
           return void res.end("{}");
@@ -734,7 +752,14 @@ describe("upload", () => {
         "Sent 2 sessions (6 events): 3 turns accepted, 0 already known, 1 session failed.",
       );
 
-      const again = await h.sesh("upload", "--project", "/work/app");
+      // s-up went through and is unchanged, so a plain re-run leaves it out; --force sends it again.
+      const skip = await h.sesh("upload", "--project", "/work/app");
+      expect(skip.code).toBe(0);
+      expect(skip.stderr).toContain("1 of 1 sessions are already uploaded and unchanged");
+      expect(skip.stdout).toContain("Sent 0 sessions (0 events)");
+      expect(skip.stdout).toContain("1 already uploaded was left out");
+
+      const again = await h.sesh("upload", "--project", "/work/app", "--force");
       expect(again.code).toBe(0);
       expect(again.stdout).toContain("1 session (5 events): 0 turns accepted, 2 already known, 0 sessions failed.");
 
