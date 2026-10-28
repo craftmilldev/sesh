@@ -20,16 +20,22 @@ const baseOrgs = [
 
 let orgs = [...baseOrgs];
 
-/** The activity endpoint's answer: `days` UTC days ending 2026-10-27, `n` tool calls on the nth day. */
+/** The activity endpoint's answer: `days` UTC days ending 2026-10-27, `n` tool calls on the nth day, 2 prompts a day except the first (none, so no ratio). */
 function insights(days: number, sessions: number) {
   const rows = Array.from({ length: days }, (_, i) => ({
     day: new Date(Date.UTC(2026, 9, 27 - (days - 1 - i))).toISOString().slice(0, 10),
     tool_calls: i + 1,
-    prompts: 2,
+    prompts: i === 0 ? 0 : 2,
     active_sessions: 1,
+    tool_calls_per_prompt: i === 0 ? null : (i + 1) / 2,
   }));
   const last = rows.at(-1)!;
-  const today = { tool_calls: last.tool_calls, prompts: last.prompts, active_sessions: last.active_sessions };
+  const today = {
+    tool_calls: last.tool_calls,
+    prompts: last.prompts,
+    active_sessions: last.active_sessions,
+    tool_calls_per_prompt: last.tool_calls_per_prompt,
+  };
   return { days: rows, today, org_sessions: sessions };
 }
 
@@ -197,16 +203,27 @@ describe("signed-in pages", () => {
     expect(text()).not.toContain("Ada ·".replace("·", "Who"));
   });
 
-  it("draws today's numbers and a chart per metric, and refetches when the range changes", async () => {
+  const open = async () => {
+    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+  };
+  const chips = () => [...container.querySelectorAll<HTMLButtonElement>(".chip")];
+  const on = () =>
+    chips()
+      .filter((c) => c.getAttribute("aria-pressed") === "true")
+      .map((c) => c.textContent);
+  const lines = () => [...container.querySelectorAll<SVGGElement>(".chart-series")].map((g) => g.dataset.series);
+
+  it("draws today's numbers and one line chart, and refetches when the range changes", async () => {
     const fetchMock = fakeApi();
     vi.stubGlobal("fetch", fetchMock);
     history.replaceState(null, "", "/app/insights");
-    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+    await open();
     const urls = () => fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights"));
     expect(urls()).toEqual(["/api/insights/activity?days=14"]);
-    expect([...container.querySelectorAll(".figure .num")].map((n) => n.textContent)).toEqual(["14", "2", "1"]);
-    expect(container.querySelectorAll("svg.chart")).toHaveLength(3);
-    expect(container.querySelectorAll("svg.chart")[0]!.querySelectorAll(".chart-bar")).toHaveLength(14);
+    expect([...container.querySelectorAll(".figure .num")].map((n) => n.textContent)).toEqual(["2", "14", "1", "7"]);
+    expect(container.querySelectorAll("svg.chart")).toHaveLength(1);
+    expect(lines()).toEqual(["prompts", "tools", "sessions"]);
+    expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(14);
     expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Insights");
     const button = [...container.querySelectorAll<HTMLButtonElement>(".range-button")].find(
       (b) => b.textContent === "28 days",
@@ -214,35 +231,101 @@ describe("signed-in pages", () => {
     await act(async () => button.click());
     expect(urls()).toEqual(["/api/insights/activity?days=14", "/api/insights/activity?days=28"]);
     expect(location.search).toBe("?days=28");
-    expect(container.querySelectorAll("svg.chart")[0]!.querySelectorAll(".chart-bar")).toHaveLength(28);
+    expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(28);
   });
 
-  it("labels every bar with its day and shows the date and value on hover and focus", async () => {
+  it("turns metrics on and off, keeps them in the URL, and never turns the last one off", async () => {
     vi.stubGlobal("fetch", fakeApi());
-    history.replaceState(null, "", "/app/insights?days=7");
-    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+    history.replaceState(null, "", "/app/insights");
+    await open();
+    expect(on()).toEqual(["Prompts", "Tool calls", "Active sessions"]);
+    const chip = (name: string) => chips().find((c) => c.textContent === name)!;
+    await act(async () => chip("Active sessions").click());
+    expect(lines()).toEqual(["prompts", "tools"]);
+    expect(location.search).toBe("?metrics=prompts,tools");
+    await act(async () => chip("Tool calls").click());
+    expect(location.search).toBe("?metrics=prompts");
+    expect(chip("Prompts").getAttribute("aria-disabled")).toBe("true");
+    await act(async () => chip("Prompts").click());
+    expect(lines()).toEqual(["prompts"]);
+    expect(location.search).toBe("?metrics=prompts");
+    // Back to the defaults leaves the URL clean; the range and the metrics are kept together.
+    await act(async () => chip("Tool calls").click());
+    await act(async () => chip("Active sessions").click());
+    expect(location.search).toBe("");
+    await act(async () => chip("Active sessions").click());
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>(".range-button")]
+        .find((b) => b.textContent === "7 days")!
+        .click(),
+    );
+    expect(location.search).toBe("?days=7&metrics=prompts,tools");
+    history.replaceState(null, "", "/");
+  });
+
+  it("starts on the metrics in the URL, in chart order, and falls back to the default for junk", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    history.replaceState(null, "", "/app/insights?metrics=ratio,prompts");
+    await open();
+    expect(on()).toEqual(["Prompts", "Tool calls per prompt"]);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    history.replaceState(null, "", "/app/insights?metrics=nope");
+    await open();
+    expect(on()).toEqual(["Prompts", "Tool calls", "Active sessions"]);
+    history.replaceState(null, "", "/");
+  });
+
+  it("gives tool calls per prompt its own labeled axis and a gap on a day with no prompts", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    history.replaceState(null, "", "/app/insights?days=7&metrics=tools,ratio");
+    await open();
+    const axis = container.querySelector(".chart-right-axis")!;
+    expect(axis.querySelector(".chart-axis-title")!.textContent).toBe("Tool calls per prompt");
+    // 7 days: no ratio on the first, so six dots, and the line starts at the second day.
+    expect(container.querySelectorAll('[data-series="ratio"] .chart-dot')).toHaveLength(6);
+    expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(7);
+    // Without the ratio, there is no right axis; with only the ratio, its ticks are the left axis.
+    await act(async () =>
+      chips()
+        .find((c) => c.textContent === "Tool calls")!
+        .click(),
+    );
+    expect(container.querySelector(".chart-right-axis")).toBeNull();
+    expect([...container.querySelectorAll(".chart-grid + .chart-tick")].map((t) => t.textContent)).toContain("2");
+    history.replaceState(null, "", "/");
+  });
+
+  it("labels every day and shows the date and every visible series on hover and focus", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    history.replaceState(null, "", "/app/insights?days=7&metrics=prompts,tools,ratio");
+    await open();
     const chart = container.querySelector("svg.chart")!;
-    const bars = [...chart.querySelectorAll<SVGGElement>(".chart-point")];
-    expect(bars.map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Wed Oct 21: Tool calls: 1",
-      "Thu Oct 22: Tool calls: 2",
-      "Fri Oct 23: Tool calls: 3",
-      "Sat Oct 24: Tool calls: 4",
-      "Sun Oct 25: Tool calls: 5",
-      "Mon Oct 26: Tool calls: 6",
-      "Tue Oct 27: Tool calls: 7",
+    const days = [...chart.querySelectorAll<SVGGElement>(".chart-point")];
+    expect(days.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Wed Oct 21: Prompts: 0, Tool calls: 1, Tool calls per prompt: –",
+      "Thu Oct 22: Prompts: 2, Tool calls: 2, Tool calls per prompt: 1",
+      "Fri Oct 23: Prompts: 2, Tool calls: 3, Tool calls per prompt: 1.5",
+      "Sat Oct 24: Prompts: 2, Tool calls: 4, Tool calls per prompt: 2",
+      "Sun Oct 25: Prompts: 2, Tool calls: 5, Tool calls per prompt: 2.5",
+      "Mon Oct 26: Prompts: 2, Tool calls: 6, Tool calls per prompt: 3",
+      "Tue Oct 27: Prompts: 2, Tool calls: 7, Tool calls per prompt: 3.5",
     ]);
     const ticks = [...chart.querySelectorAll(".chart-tick.day")].map((t) => t.textContent);
     expect(ticks).toEqual(["W21Oct", "T22", "F23", "S24", "S25", "M26", "T27today"]);
-    expect(chart.querySelector(".chart-value")!.textContent).toBe("7");
-    expect(container.querySelector(".chart-today")!.textContent).toBe("7 today");
     expect(container.querySelector(".chart-tip")).toBeNull();
+    expect(chart.querySelector(".chart-guide")).toBeNull();
 
-    await act(async () => bars[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
-    expect(container.querySelector(".chart-tip")!.textContent).toBe("Thu Oct 22Tool calls: 2");
-    await act(async () => bars[3]!.focus());
-    expect(container.querySelector(".chart-tip")!.textContent).toBe("Sat Oct 24Tool calls: 4");
-    await act(async () => bars[3]!.blur());
+    await act(async () => days[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(container.querySelector(".chart-tip")!.textContent).toBe(
+      "Thu Oct 22Prompts: 2Tool calls: 2Tool calls per prompt: 1",
+    );
+    expect(chart.querySelector(".chart-guide")).not.toBeNull();
+    await act(async () => days[0]!.focus());
+    expect(container.querySelector(".chart-tip")!.textContent).toBe(
+      "Wed Oct 21Prompts: 0Tool calls: 1Tool calls per prompt: –",
+    );
+    await act(async () => days[0]!.blur());
     expect(container.querySelector(".chart-tip")).toBeNull();
     history.replaceState(null, "", "/");
   });
@@ -250,7 +333,7 @@ describe("signed-in pages", () => {
   it("thins the day ticks at 28 days but keeps today and the month start", async () => {
     vi.stubGlobal("fetch", fakeApi());
     history.replaceState(null, "", "/app/insights?days=28");
-    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+    await open();
     const ticks = [...container.querySelector("svg.chart")!.querySelectorAll(".chart-tick.day")].map(
       (t) => t.textContent,
     );
@@ -275,8 +358,8 @@ describe("signed-in pages", () => {
     const fetchMock = fakeApi();
     vi.stubGlobal("fetch", fetchMock);
     history.replaceState(null, "", "/app/insights?days=7");
-    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
-    expect(container.querySelectorAll("svg.chart .chart-bar")).toHaveLength(21);
+    await open();
+    expect(container.querySelectorAll('svg.chart [data-series="prompts"] .chart-dot')).toHaveLength(7);
     history.replaceState(null, "", "/");
   });
 
