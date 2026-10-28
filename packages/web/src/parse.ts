@@ -6,15 +6,29 @@ type Tx = Pick<Db, "query">;
 
 const AGENT = "claude-code";
 
+export interface SaveResult {
+  /** Events newly stored. */
+  added: number;
+  /** Backfill records dropped because their turn (session and prompt) already had stored events. */
+  backfillSkipped: number;
+}
+
 /**
- * Writes parsed records for one org and user. Safe to run twice on the same records, and in any order:
+ * Writes parsed records for one org and user. A backfill record is dropped when its turn already had a stored event
+ * before this call (checked up front, so a new turn is saved whole); live records are never dropped. Safe to run twice on the same records, and in any order:
  * a session, a prompt and an event are each found-or-created by their own ids, a session's span only widens,
  * and an event that arrives before its prompt's `user_prompt` makes the prompt, which the later one fills in.
  */
-export async function saveRecords(tx: Tx, orgId: string, userId: string, records: ParsedRecord[]): Promise<number> {
+export async function saveRecords(tx: Tx, orgId: string, userId: string, records: ParsedRecord[]): Promise<SaveResult> {
   let added = 0;
+  let backfillSkipped = 0;
+  const stored = await turnsWithEvents(tx, orgId, records);
   const sessions = new Map<string, string>();
   for (const r of records) {
+    if (r.backfill && r.promptId && stored.has(`${r.sessionId}\0${r.promptId}`)) {
+      backfillSkipped++;
+      continue;
+    }
     let sessionId = sessions.get(r.sessionId);
     if (!sessionId) {
       const [s] = await tx.query<{ id: string }>(
@@ -77,7 +91,23 @@ export async function saveRecords(tx: Tx, orgId: string, userId: string, records
       added += made.length;
     }
   }
-  return added;
+  return { added, backfillSkipped };
+}
+
+/** The `session_id\0prompt.id` of each turn in the backfill records that already has at least one stored event. */
+async function turnsWithEvents(tx: Tx, orgId: string, records: ParsedRecord[]): Promise<Set<string>> {
+  const turns = new Map<string, [string, string]>();
+  for (const r of records)
+    if (r.backfill && r.promptId) turns.set(`${r.sessionId}\0${r.promptId}`, [r.sessionId, r.promptId]);
+  if (!turns.size) return new Set();
+  const rows = await tx.query<{ session_id: string; prompt_id: string }>(
+    `SELECT DISTINCT s.external_id AS session_id, p.external_id AS prompt_id
+     FROM sesh.events e JOIN sesh.prompts p ON p.id = e.prompt_id JOIN sesh.sessions s ON s.id = e.session_id
+     WHERE s.org_id = $1 AND s.agent = $2
+       AND (s.external_id, p.external_id) IN (SELECT * FROM unnest($3::text[], $4::text[]))`,
+    [orgId, AGENT, [...turns.values()].map((t) => t[0]), [...turns.values()].map((t) => t[1])],
+  );
+  return new Set(rows.map((r) => `${r.session_id}\0${r.prompt_id}`));
 }
 
 export interface ParseResult {
@@ -86,6 +116,8 @@ export interface ParseResult {
   /** Payloads sesh can't read yet (protobuf, or not JSON), marked done so they aren't retried. */
   skipped: number;
   events: number;
+  /** Backfill records dropped because their turn was already stored. */
+  backfillSkipped: number;
   /** Payloads whose parse threw; left unparsed for the next run. */
   failed: number;
 }
@@ -107,18 +139,21 @@ export async function parsePending(db: Db, payloadId?: string): Promise<ParseRes
      WHERE signal = 'logs' AND parsed_at IS NULL AND ($1::uuid IS NULL OR id = $1) ORDER BY id LIMIT 50`,
     [payloadId ?? null],
   );
-  const result: ParseResult = { parsed: 0, skipped: 0, events: 0, failed: 0 };
+  const result: ParseResult = { parsed: 0, skipped: 0, events: 0, backfillSkipped: 0, failed: 0 };
   for (const row of rows) {
     const json = decodeJsonPayload(row.body, row.content_type, row.content_encoding);
     try {
       await db.transaction(async (tx) => {
-        const events =
-          json === undefined ? 0 : await saveRecords(tx, row.org_id, row.user_id, parseClaudeCodeLogs(json));
+        const saved =
+          json === undefined
+            ? { added: 0, backfillSkipped: 0 }
+            : await saveRecords(tx, row.org_id, row.user_id, parseClaudeCodeLogs(json));
         await tx.query(`UPDATE sesh.raw_payloads SET parsed_at = now() WHERE id = $1`, [row.id]);
         if (json === undefined) result.skipped++;
         else {
           result.parsed++;
-          result.events += events;
+          result.events += saved.added;
+          result.backfillSkipped += saved.backfillSkipped;
         }
       });
     } catch (err) {

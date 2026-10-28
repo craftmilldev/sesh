@@ -75,6 +75,91 @@ describe("claude code adapter", () => {
   });
 });
 
+/** The fixture as a backfill sends it, optionally keeping only some prompts' records. */
+function backfillOf(promptIds?: string[]): string {
+  const doc = JSON.parse(fixture) as {
+    resourceLogs: {
+      resource: { attributes: unknown[] };
+      scopeLogs: { logRecords: { attributes: { key: string; value: { stringValue?: string } }[] }[] }[];
+    }[];
+  };
+  for (const rl of doc.resourceLogs) {
+    rl.resource.attributes.push({ key: "sesh.source", value: { stringValue: "backfill" } });
+    if (promptIds)
+      for (const sl of rl.scopeLogs)
+        sl.logRecords = sl.logRecords.filter((r) =>
+          promptIds.includes(r.attributes.find((a) => a.key === "prompt.id")?.value.stringValue ?? ""),
+        );
+  }
+  return JSON.stringify(doc);
+}
+
+describe("backfill payloads", () => {
+  const events = (orgId: string) =>
+    n(`SELECT count(*) AS n FROM sesh.events e JOIN sesh.sessions s ON s.id = e.session_id WHERE s.org_id = $1`, [
+      orgId,
+    ]);
+
+  it("marks records from a backfill payload", () => {
+    expect(parseClaudeCodeLogs(JSON.parse(backfillOf())).every((r) => r.backfill === true)).toBe(true);
+    expect(parseClaudeCodeLogs(JSON.parse(fixture)).some((r) => r.backfill)).toBe(false);
+  });
+
+  it("stores nothing for turns that live ingest already has", async () => {
+    const w = await member("bf1");
+    await store(w, fixture);
+    await parsePending(db);
+    await store(w, backfillOf());
+    expect(await parsePending(db)).toMatchObject({ parsed: 1, events: 0, backfillSkipped: 6 });
+    expect(await events(w.orgId)).toBe(4);
+  });
+
+  it("stores a new turn whole, and nothing more the second time", async () => {
+    const w = await member("bf2");
+    await store(w, backfillOf());
+    expect(await parsePending(db)).toMatchObject({ events: 4, backfillSkipped: 0 });
+    const counts = [
+      `SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`,
+      `SELECT count(*) AS n FROM sesh.prompts p JOIN sesh.sessions s ON s.id = p.session_id WHERE s.org_id = $1`,
+      `SELECT count(*) AS n FROM sesh.events e JOIN sesh.sessions s ON s.id = e.session_id WHERE s.org_id = $1`,
+    ];
+    expect(await Promise.all(counts.map((q) => n(q, [w.orgId])))).toEqual([1, 2, 4]);
+    await store(w, backfillOf());
+    expect(await parsePending(db)).toMatchObject({ events: 0, backfillSkipped: 6 });
+    expect(await Promise.all(counts.map((q) => n(q, [w.orgId])))).toEqual([1, 2, 4]);
+  });
+
+  it("skips only the turns already stored", async () => {
+    const w = await member("bf3");
+    await store(w, backfillOf(["p-1111"]));
+    await parsePending(db);
+    await store(w, backfillOf());
+    expect(await parsePending(db)).toMatchObject({ events: 1, backfillSkipped: 4 });
+    expect(await events(w.orgId)).toBe(4);
+  });
+
+  it("does not top up a turn that live ingest stored in part", async () => {
+    const w = await member("bf4");
+    const live = JSON.parse(fixture) as FixtureDoc;
+    // Live ingest only saw the turn's first api_request.
+    live.resourceLogs[0]!.scopeLogs[0]!.logRecords = live.resourceLogs[0]!.scopeLogs[0]!.logRecords.slice(0, 2);
+    await store(w, JSON.stringify(live));
+    await parsePending(db);
+    expect(await events(w.orgId)).toBe(1);
+    await store(w, backfillOf(["p-1111"]));
+    await parsePending(db);
+    expect(await events(w.orgId)).toBe(1);
+  });
+
+  it("leaves live payloads alone", async () => {
+    const w = await member("bf5");
+    await store(w, fixture);
+    await parsePending(db);
+    await store(w, fixture.replace('"2.1.0"', '"2.1.1"'));
+    expect(await parsePending(db)).toMatchObject({ events: 0, backfillSkipped: 0 });
+  });
+});
+
 describe("parsing stored payloads", () => {
   it("turns a session into sessions, prompts and events for the token's org and user", async () => {
     const w = await member("par1");
