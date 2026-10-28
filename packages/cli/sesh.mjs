@@ -822,25 +822,25 @@ export function logsUrl(to) {
   return to ? to.url.replace(/\/v1\/limits$/, "") + "/v1/logs" : null;
 }
 
-async function uploadCommand(args, { fetchFn = fetch } = {}) {
-  const dryRun = args.includes("--dry-run");
-  const sessionId = args.find((a) => !a.startsWith("--"));
-  if (!sessionId) throw new Error("Usage: sesh upload <session-id> [--dry-run]  (`sesh sessions` lists the ids)");
-  const to = target();
-  if (!dryRun && !to)
-    throw new Error("No sesh to send to. Run `sesh setup` (or set SESH_URL and SESH_TOKEN) and try again.");
+/** Thrown for a problem every session would hit (a rejected token), so a bulk upload stops instead of failing each. */
+class FatalUpload extends Error {}
+
+/**
+ * Sends one session's payloads. Returns `{ events, turns, requests, accepted, skipped }`: accepted and skipped are the
+ * turns the server stored and the ones it already had, or null when the server didn't say (an older one).
+ */
+async function sendSession(sessionId, to, fetchFn) {
   const entries = readSessionEntries(sessionId);
   if (!entries.length)
     throw new Error(`No Claude Code session ${sessionId} found in ${join(claudeDir(), "projects")}.`);
   const turns = buildTurns(entries, sessionId);
   const { payloads, events, dropped } = buildPayloads(turns, sessionId);
-  if (dropped) console.error(`sesh: a turn is too large to send whole; ${dropped} of its events are left out.`);
-  if (dryRun) {
-    for (const p of payloads) console.log(JSON.stringify(p, null, 2));
-    console.error(`Dry run: ${events} events in ${turns.length} turns, ${payloads.length} requests. Nothing was sent.`);
-    return;
-  }
+  if (dropped)
+    console.error(`sesh: a turn in ${sessionId} is too large to send whole; ${dropped} events are left out.`);
   const url = logsUrl(to);
+  let accepted = 0;
+  let skipped = 0;
+  let known = true;
   for (const [i, payload] of payloads.entries()) {
     let res;
     try {
@@ -856,13 +856,185 @@ async function uploadCommand(args, { fetchFn = fetch } = {}) {
       });
     }
     if (res.status === 401)
-      throw new Error("sesh rejected the token (401). Check it on sesh's Tokens tab, then run `sesh setup` again.");
+      throw new FatalUpload(
+        "sesh rejected the token (401). Check it on sesh's Tokens tab, then run `sesh setup` again.",
+      );
     if (!res.ok) throw new Error(`sesh answered ${res.status} for request ${i + 1} of ${payloads.length}.`);
+    const body = await res.json().catch(() => null);
+    const counts = body?.sesh;
+    if (Number.isFinite(counts?.turns_accepted) && Number.isFinite(counts?.turns_skipped)) {
+      accepted += counts.turns_accepted;
+      skipped += counts.turns_skipped;
+    } else known = false;
   }
-  console.log(
-    `Sent ${events} events from ${turns.length} turns of ${sessionId} in ${payloads.length} ` +
-      `${payloads.length === 1 ? "request" : "requests"}. Turns sesh already has are skipped by the server.`,
+  return {
+    events,
+    turns: turns.length,
+    requests: payloads.length,
+    accepted: known ? accepted : null,
+    skipped: known ? skipped : null,
+  };
+}
+
+/** The value after `--name` in `args`, `true` for a bare flag, or undefined when absent. */
+function flagValue(args, name) {
+  const i = args.indexOf(name);
+  if (i < 0) return undefined;
+  const next = args[i + 1];
+  return next && !next.startsWith("--") ? next : true;
+}
+
+/**
+ * Which sessions an upload covers. `all` takes everything; `since` (a date) keeps sessions that started on or after it
+ * (a session with no start time never matches); `project` keeps sessions whose project path contains the text.
+ * Filters combine with and.
+ */
+export function selectSessions(sessions, { all = false, since = null, project = null } = {}) {
+  let from = null;
+  if (since !== null) {
+    from = Date.parse(since);
+    if (Number.isNaN(from)) throw new Error(`--since needs a date like 2026-10-01, not "${since}".`);
+  }
+  if (project !== null && project === "") throw new Error("--project needs some text of the project path.");
+  return sessions.filter((s) => {
+    if (from !== null && !(s.started_at && Date.parse(s.started_at) >= from)) return false;
+    if (project !== null && !(s.project ?? "").includes(project)) return false;
+    return all || from !== null || project !== null;
+  });
+}
+
+/** The indexes (0-based) a person's answer picks from a list of `max`: "all", "1,3", "2-4". Null for an answer that isn't one. */
+export function parseChoice(answer, max) {
+  const text = answer.trim().toLowerCase();
+  if (text === "all" || text === "a") return Array.from({ length: max }, (_, i) => i);
+  const picked = new Set();
+  for (const part of text.split(/[\s,]+/).filter(Boolean)) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!m) return null;
+    const lo = Number(m[1]);
+    const hi = m[2] ? Number(m[2]) : lo;
+    if (lo < 1 || hi < lo || hi > max) return null;
+    for (let n = lo; n <= hi; n++) picked.add(n - 1);
+  }
+  return [...picked].sort((a, b) => a - b);
+}
+
+/** Lists the sessions and asks which to upload, on the terminal. Returns the chosen ones (none on an empty answer). */
+async function chooseSessions(sessions) {
+  sessions.forEach((s, i) => {
+    const date = s.started_at ? s.started_at.slice(0, 10) : "unknown";
+    console.error(`${String(i + 1).padStart(3)}  ${date}  ${s.project}  ${s.prompts} prompts  ${s.id}`);
+  });
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    for (;;) {
+      const answer = await rl.question('Upload which? (numbers like 1,3-5, "all", or Enter for none) ');
+      if (!answer.trim()) return [];
+      const picked = parseChoice(answer, sessions.length);
+      if (picked) return picked.map((i) => sessions[i]);
+      console.error(`Pick numbers between 1 and ${sessions.length}.`);
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+const UPLOAD_USAGE =
+  "Usage: sesh upload <session-id> | --all | --since <date> | --project <text>  [--dry-run]\n" +
+  "`sesh sessions` lists the ids; `sesh upload` alone lets you pick on a terminal.";
+
+/** The summary line of a bulk upload. */
+export function uploadSummary({ sent, accepted, skipped, failed, events }) {
+  return (
+    `Sent ${sent} ${sent === 1 ? "session" : "sessions"} (${events} events): ${accepted} turns accepted, ` +
+    `${skipped} already known, ${failed} ${failed === 1 ? "session" : "sessions"} failed.`
   );
+}
+
+async function uploadCommand(args, { fetchFn = fetch } = {}) {
+  const dryRun = args.includes("--dry-run");
+  const all = args.includes("--all");
+  const since = flagValue(args, "--since");
+  const project = flagValue(args, "--project");
+  const valued = new Set([since, project].filter((v) => typeof v === "string"));
+  const ids = args.filter((a) => !a.startsWith("--") && !valued.has(a));
+  const filtered = all || since !== undefined || project !== undefined;
+  if (since === true || project === true) throw new Error(UPLOAD_USAGE);
+  if (ids.length > 1 || (ids.length && filtered)) throw new Error(UPLOAD_USAGE);
+  if (!ids.length && !filtered && !process.stdin.isTTY) throw new Error(UPLOAD_USAGE);
+
+  const to = target();
+  if (!dryRun && !to)
+    throw new Error("No sesh to send to. Run `sesh setup` (or set SESH_URL and SESH_TOKEN) and try again.");
+
+  let chosen;
+  if (ids.length) chosen = [{ id: ids[0] }];
+  else {
+    const found = scanSessions();
+    if (!found.length) throw new Error(`No Claude Code sessions found in ${join(claudeDir(), "projects")}.`);
+    chosen = filtered
+      ? selectSessions(found, { all, since: since ?? null, project: project ?? null })
+      : await chooseSessions(found);
+    if (!chosen.length) return void console.log("No sessions selected. Nothing was sent.");
+  }
+
+  if (dryRun) {
+    let events = 0;
+    for (const s of chosen) {
+      const entries = readSessionEntries(s.id);
+      if (!entries.length) throw new Error(`No Claude Code session ${s.id} found in ${join(claudeDir(), "projects")}.`);
+      const turns = buildTurns(entries, s.id);
+      const built = buildPayloads(turns, s.id);
+      if (built.dropped)
+        console.error(`sesh: a turn in ${s.id} is too large to send whole; ${built.dropped} events are left out.`);
+      if (chosen.length === 1) for (const p of built.payloads) console.log(JSON.stringify(p, null, 2));
+      else console.error(`${s.id}: ${built.events} events in ${turns.length} turns, ${built.payloads.length} requests`);
+      events += built.events;
+    }
+    console.error(
+      `Dry run: ${events} events from ${chosen.length} ${chosen.length === 1 ? "session" : "sessions"}. Nothing was sent.`,
+    );
+    return;
+  }
+
+  if (chosen.length === 1 && ids.length) {
+    // One named session: a failure is the command's failure.
+    const r = await sendSession(chosen[0].id, to, fetchFn);
+    const server =
+      r.accepted === null
+        ? "Turns sesh already has are skipped by the server."
+        : `${r.accepted} turns accepted, ${r.skipped} already known.`;
+    console.log(
+      `Sent ${r.events} events from ${r.turns} turns of ${chosen[0].id} in ${r.requests} ` +
+        `${r.requests === 1 ? "request" : "requests"}. ${server}`,
+    );
+    return;
+  }
+
+  const total = { sent: 0, accepted: 0, skipped: 0, failed: 0, events: 0 };
+  for (const [i, s] of chosen.entries()) {
+    const label = `[${i + 1}/${chosen.length}] ${s.id}`;
+    try {
+      const r = await sendSession(s.id, to, fetchFn);
+      total.sent++;
+      total.events += r.events;
+      total.accepted += r.accepted ?? 0;
+      total.skipped += r.skipped ?? 0;
+      console.log(
+        `${label}: ${r.events} events` +
+          (r.accepted === null ? "" : `, ${r.accepted} turns accepted, ${r.skipped} already known`),
+      );
+    } catch (err) {
+      total.failed++;
+      console.error(`${label}: failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof FatalUpload) {
+        console.error(`Stopping: the ${chosen.length - i - 1} sessions left would fail the same way.`);
+        break;
+      }
+    }
+  }
+  console.log(uploadSummary(total));
+  if (total.failed) process.exitCode = 1;
 }
 
 /** Flags of the form `--name value` and `--name`, and the plain words. */
@@ -929,6 +1101,8 @@ const HELP = `sesh ${VERSION}: session insights for Claude Code teams
   sesh status              what is set up: server, token, status line, last reading, updates
   sesh sessions            list the Claude Code sessions on this machine (local files only, no network)
   sesh upload <session-id> send one past session to sesh as OTel logs (--dry-run prints them, sends nothing)
+  sesh upload              pick sessions from a list (on a terminal), or choose them with --all, --since <date>,
+                           --project <text>; safe to run again, sesh skips turns it already has
   sesh setup [--replace]   save the server and token (from the OTel settings, or --url and --token) and make sesh
                            Claude Code's status line
   sesh statusline on|off   make sesh Claude Code's status line, or remove it

@@ -66,3 +66,19 @@ export function buildPayloads(
 ): { payloads: Record<string, unknown>[]; events: number; dropped: number };
 /** Where upload posts: the configured server's /v1/logs. */
 export function logsUrl(to: Target | null): string | null;
+export interface SelectOptions {
+  all?: boolean;
+  since?: string | null;
+  project?: string | null;
+}
+/** The sessions an upload covers: `all`, or those matching `since` (a date) and `project` (path substring). */
+export function selectSessions(sessions: SessionSummary[], options?: SelectOptions): SessionSummary[];
+/** The 0-based indexes picked by an answer like "all", "1,3" or "2-4" from a list of `max`, or null if it isn't one. */
+export function parseChoice(answer: string, max: number): number[] | null;
+export function uploadSummary(t: {
+  sent: number;
+  accepted: number;
+  skipped: number;
+  failed: number;
+  events: number;
+}): string;

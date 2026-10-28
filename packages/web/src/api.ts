@@ -483,9 +483,13 @@ export function createApp(opts: AppOptions) {
     await metrics.capture("ingest_accepted", who.userId, { signal, format, gzip: encoding === "gzip" });
     // Parse logs right away, and sweep up any earlier payload whose parse failed. The raw payload is already safe,
     // so a failure here is only counted.
+    // A backfill upload also gets its turn counts back, which `sesh upload` prints; live payloads get `{}`.
+    let backfillTurns: { turns_accepted: number; turns_skipped: number } | undefined;
     if (signal === "logs") {
       try {
         const r = await parsePending(db);
+        if (r.turnsAccepted || r.turnsSkipped)
+          backfillTurns = { turns_accepted: r.turnsAccepted, turns_skipped: r.turnsSkipped };
         if (r.backfillSkipped)
           await metrics.capture("backfill_records_skipped", who.userId, {
             reason: "turn_already_stored",
@@ -515,8 +519,10 @@ export function createApp(opts: AppOptions) {
         await metrics.capture("plan_usage_parse_failed", who.userId, { format });
       }
     }
-    // An empty OTLP success response: `{}` for JSON, zero bytes for protobuf.
-    return format === "json" ? c.json({}) : c.body(null, 200, { "content-type": "application/x-protobuf" });
+    // An OTLP success response: `{}` for JSON (plus the backfill counts above), zero bytes for protobuf.
+    return format === "json"
+      ? c.json(backfillTurns ? { sesh: backfillTurns } : {})
+      : c.body(null, 200, { "content-type": "application/x-protobuf" });
   };
   // Plan usage from the status line script. Only the session id, the two windows and the time are kept.
   app.post("/v1/limits", async (c) => {

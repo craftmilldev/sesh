@@ -11,6 +11,9 @@ export interface SaveResult {
   added: number;
   /** Backfill records dropped because their turn (session and prompt) already had stored events. */
   backfillSkipped: number;
+  /** Backfill turns (session and prompt) that were stored, and ones dropped because they already had events. */
+  turnsAccepted: number;
+  turnsSkipped: number;
 }
 
 /**
@@ -22,13 +25,17 @@ export interface SaveResult {
 export async function saveRecords(tx: Tx, orgId: string, userId: string, records: ParsedRecord[]): Promise<SaveResult> {
   let added = 0;
   let backfillSkipped = 0;
+  const accepted = new Set<string>();
+  const skipped = new Set<string>();
   const stored = await turnsWithEvents(tx, orgId, records);
   const sessions = new Map<string, string>();
   for (const r of records) {
     if (r.backfill && r.promptId && stored.has(`${r.sessionId}\0${r.promptId}`)) {
       backfillSkipped++;
+      skipped.add(`${r.sessionId}\0${r.promptId}`);
       continue;
     }
+    if (r.backfill && r.promptId) accepted.add(`${r.sessionId}\0${r.promptId}`);
     let sessionId = sessions.get(r.sessionId);
     if (!sessionId) {
       const [s] = await tx.query<{ id: string }>(
@@ -91,7 +98,7 @@ export async function saveRecords(tx: Tx, orgId: string, userId: string, records
       added += made.length;
     }
   }
-  return { added, backfillSkipped };
+  return { added, backfillSkipped, turnsAccepted: accepted.size, turnsSkipped: skipped.size };
 }
 
 /** The `session_id\0prompt.id` of each turn in the backfill records that already has at least one stored event. */
@@ -118,6 +125,8 @@ export interface ParseResult {
   events: number;
   /** Backfill records dropped because their turn was already stored. */
   backfillSkipped: number;
+  turnsAccepted: number;
+  turnsSkipped: number;
   /** Payloads whose parse threw; left unparsed for the next run. */
   failed: number;
 }
@@ -139,14 +148,22 @@ export async function parsePending(db: Db, payloadId?: string): Promise<ParseRes
      WHERE signal = 'logs' AND parsed_at IS NULL AND ($1::uuid IS NULL OR id = $1) ORDER BY id LIMIT 50`,
     [payloadId ?? null],
   );
-  const result: ParseResult = { parsed: 0, skipped: 0, events: 0, backfillSkipped: 0, failed: 0 };
+  const result: ParseResult = {
+    parsed: 0,
+    skipped: 0,
+    events: 0,
+    backfillSkipped: 0,
+    turnsAccepted: 0,
+    turnsSkipped: 0,
+    failed: 0,
+  };
   for (const row of rows) {
     const json = decodeJsonPayload(row.body, row.content_type, row.content_encoding);
     try {
       await db.transaction(async (tx) => {
         const saved =
           json === undefined
-            ? { added: 0, backfillSkipped: 0 }
+            ? { added: 0, backfillSkipped: 0, turnsAccepted: 0, turnsSkipped: 0 }
             : await saveRecords(tx, row.org_id, row.user_id, parseClaudeCodeLogs(json));
         await tx.query(`UPDATE sesh.raw_payloads SET parsed_at = now() WHERE id = $1`, [row.id]);
         if (json === undefined) result.skipped++;
@@ -154,6 +171,8 @@ export async function parsePending(db: Db, payloadId?: string): Promise<ParseRes
           result.parsed++;
           result.events += saved.added;
           result.backfillSkipped += saved.backfillSkipped;
+          result.turnsAccepted += saved.turnsAccepted;
+          result.turnsSkipped += saved.turnsSkipped;
         }
       });
     } catch (err) {

@@ -110,14 +110,20 @@ describe("backfill payloads", () => {
     await store(w, fixture);
     await parsePending(db);
     await store(w, backfillOf());
-    expect(await parsePending(db)).toMatchObject({ parsed: 1, events: 0, backfillSkipped: 6 });
+    expect(await parsePending(db)).toMatchObject({
+      parsed: 1,
+      events: 0,
+      backfillSkipped: 6,
+      turnsAccepted: 0,
+      turnsSkipped: 2,
+    });
     expect(await events(w.orgId)).toBe(4);
   });
 
   it("stores a new turn whole, and nothing more the second time", async () => {
     const w = await member("bf2");
     await store(w, backfillOf());
-    expect(await parsePending(db)).toMatchObject({ events: 4, backfillSkipped: 0 });
+    expect(await parsePending(db)).toMatchObject({ events: 4, backfillSkipped: 0, turnsAccepted: 2, turnsSkipped: 0 });
     const counts = [
       `SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`,
       `SELECT count(*) AS n FROM sesh.prompts p JOIN sesh.sessions s ON s.id = p.session_id WHERE s.org_id = $1`,
@@ -134,7 +140,7 @@ describe("backfill payloads", () => {
     await store(w, backfillOf(["p-1111"]));
     await parsePending(db);
     await store(w, backfillOf());
-    expect(await parsePending(db)).toMatchObject({ events: 1, backfillSkipped: 4 });
+    expect(await parsePending(db)).toMatchObject({ events: 1, backfillSkipped: 4, turnsAccepted: 1, turnsSkipped: 1 });
     expect(await events(w.orgId)).toBe(4);
   });
 
