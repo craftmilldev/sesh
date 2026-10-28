@@ -586,8 +586,6 @@ export async function getSession(
   };
 }
 
-const TOTAL_TOKENS = `(COALESCE(e.input_tokens, 0) + COALESCE(e.output_tokens, 0) + COALESCE(e.cache_read_tokens, 0) + COALESCE(e.cache_write_tokens, 0))`;
-
 export interface DayTotals {
   sessions: number;
   tokens: number;
@@ -596,27 +594,49 @@ export interface DayTotals {
   tool_calls: number;
 }
 
-/** The org's sessions started in [since, until), summed, and the heaviest `top` of them by total tokens. */
-export async function sessionsBetween(
+export interface DayTop {
+  id: string;
+  started_at: Date;
+  tokens: number;
+  cache_read_tokens: number;
+  prompts: number;
+  tool_calls: number;
+}
+
+/**
+ * What the org did in [since, until): its prompts and events with a timestamp in that range, summed, and the heaviest
+ * `top` sessions by tokens in it. A session counts when it has any prompt or event in the range, whenever it started.
+ */
+export async function activityBetween(
   db: Db,
   orgId: string,
   since: Date,
   until: Date,
   top: number,
-): Promise<{ totals: DayTotals; top: SessionRow[]; orgSessions: number }> {
+): Promise<{ totals: DayTotals; top: DayTop[]; orgSessions: number }> {
+  const active = `SELECT s.id, s.started_at,
+            COALESCE(e.tokens, 0) AS tokens, COALESCE(e.cache_read_tokens, 0) AS cache_read_tokens,
+            COALESCE(e.tool_calls, 0) AS tool_calls, p.prompts
+     FROM sesh.sessions s
+     CROSS JOIN LATERAL (
+       SELECT sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)) AS tokens,
+              sum(cache_read_tokens) AS cache_read_tokens,
+              count(*) FILTER (WHERE kind = 'tool_call') AS tool_calls, count(*) AS events
+       FROM sesh.events WHERE session_id = s.id AND occurred_at >= $2 AND occurred_at < $3
+     ) e
+     CROSS JOIN LATERAL (
+       SELECT count(*) AS prompts FROM sesh.prompts WHERE session_id = s.id AND started_at >= $2 AND started_at < $3
+     ) p
+     WHERE s.org_id = $1 AND (e.events > 0 OR p.prompts > 0)`;
   const [t] = await db.query<Record<keyof DayTotals, string>>(
-    `SELECT count(*) AS sessions,
-            COALESCE(sum(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS tokens,
+    `SELECT count(*) AS sessions, COALESCE(sum(tokens), 0) AS tokens,
             COALESCE(sum(cache_read_tokens), 0) AS cache_read_tokens,
             COALESCE(sum(prompts), 0) AS prompts, COALESCE(sum(tool_calls), 0) AS tool_calls
-     FROM (${SESSION_SELECT} WHERE s.org_id = $1 AND s.started_at >= $2 AND s.started_at < $3) t`,
+     FROM (${active}) t`,
     [orgId, since, until],
   );
-  const rows = await db.query<Record<keyof SessionRow, string | number | Date | null>>(
-    `${SESSION_SELECT}
-     WHERE s.org_id = $1 AND s.started_at >= $2 AND s.started_at < $3
-     ORDER BY ${TOTAL_TOKENS} DESC, s.started_at DESC, s.id DESC
-     LIMIT $4`,
+  const rows = await db.query<Record<keyof DayTop, string | Date>>(
+    `${active} ORDER BY tokens DESC, s.started_at DESC, s.id DESC LIMIT $4`,
     [orgId, since, until, top],
   );
   const [all] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`, [orgId]);
@@ -628,7 +648,14 @@ export async function sessionsBetween(
       prompts: Number(t!.prompts),
       tool_calls: Number(t!.tool_calls),
     },
-    top: rows.map(sessionRow),
+    top: rows.map((r) => ({
+      id: r.id as string,
+      started_at: new Date(r.started_at),
+      tokens: Number(r.tokens),
+      cache_read_tokens: Number(r.cache_read_tokens),
+      prompts: Number(r.prompts),
+      tool_calls: Number(r.tool_calls),
+    })),
     orgSessions: Number(all!.n),
   };
 }

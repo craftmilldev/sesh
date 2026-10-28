@@ -13,7 +13,7 @@ export interface Session {
 }
 
 /** An app over the test database, with the events it recorded and the emails it sent. */
-export function setupApp(db: Db) {
+export function setupApp(db: Db, now?: () => Date) {
   const events: { event: string; distinctId: string; properties?: Record<string, unknown> }[] = [];
   const emails: Email[] = [];
   const metrics: Metrics = {
@@ -23,6 +23,7 @@ export function setupApp(db: Db) {
     getDb: async () => db,
     tokenSecret: SECRET,
     metrics,
+    now,
     sendEmail: async (e) => void emails.push(e),
   });
   /** Calls the JSON API: a POST with a JSON body when `body` is given, else a GET. */

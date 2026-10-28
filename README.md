@@ -27,8 +27,9 @@ optionally gzipped, up to 4 MB) is stored as it arrived in `sesh.raw_payloads`. 
 Parsing is idempotent and order-independent. Prompt text and `user.*` identity attributes are dropped before storing.
 Only JSON logs are parsed so far; protobuf payloads stay raw.
 
-`/app` is about the team, not individuals, and names no one. It shows today's sessions (since the viewer's local midnight,
-`GET /api/today?since=ISO`): total tokens, cache hit, prompts and tool calls, the team's plan-window pool, and the 5
+`/app` is about the team, not individuals, and names no one. It shows today, a UTC day for everyone (`GET /api/today`; `?day=YYYY-MM-DD`
+asks for another): the sessions with a prompt or event today, and the work done today, by when each prompt and event happened, not by when its
+session started: total tokens, cache hit, prompts and tool calls, the team's plan-window pool, and the 5
 heaviest sessions with their share of the day. `/app/sessions` is the full list (`GET /api/sessions?page=N`, 25 a page,
 newest first) and `/app/sessions/<id>` one session with its prompts and events. `/app/members` holds the member list
 (`GET /api/members`), invites, org switching and creation; `/app/tokens` holds the ingest tokens. An org with no sessions shows how to
