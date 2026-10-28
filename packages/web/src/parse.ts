@@ -6,6 +6,10 @@ type Tx = Pick<Db, "query">;
 
 const AGENT = "claude-code";
 
+/** Columns per event row, and rows per insert (Postgres allows 65535 parameters in one statement). */
+const EVENT_COLUMNS = 16;
+const EVENT_BATCH = 500;
+
 export interface SaveResult {
   /** Events newly stored. */
   added: number;
@@ -23,12 +27,11 @@ export interface SaveResult {
  * and an event that arrives before its prompt's `user_prompt` makes the prompt, which the later one fills in.
  */
 export async function saveRecords(tx: Tx, orgId: string, userId: string, records: ParsedRecord[]): Promise<SaveResult> {
-  let added = 0;
-  let backfillSkipped = 0;
   const accepted = new Set<string>();
   const skipped = new Set<string>();
   const stored = await turnsWithEvents(tx, orgId, records);
-  const sessions = new Map<string, string>();
+  let backfillSkipped = 0;
+  const kept: ParsedRecord[] = [];
   for (const r of records) {
     if (r.backfill && r.promptId && stored.has(`${r.sessionId}\0${r.promptId}`)) {
       backfillSkipped++;
@@ -36,67 +39,116 @@ export async function saveRecords(tx: Tx, orgId: string, userId: string, records
       continue;
     }
     if (r.backfill && r.promptId) accepted.add(`${r.sessionId}\0${r.promptId}`);
-    let sessionId = sessions.get(r.sessionId);
-    if (!sessionId) {
-      const [s] = await tx.query<{ id: string }>(
-        `INSERT INTO sesh.sessions (id, org_id, user_id, agent, external_id, started_at, ended_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $6)
-         ON CONFLICT (org_id, agent, external_id) DO UPDATE
-           SET started_at = LEAST(sesh.sessions.started_at, $6), ended_at = GREATEST(sesh.sessions.ended_at, $6)
-         RETURNING id`,
-        [uuidv7(), orgId, userId, AGENT, r.sessionId, r.at],
-      );
-      sessionId = s!.id;
-      sessions.set(r.sessionId, sessionId);
-    } else {
-      await tx.query(
-        `UPDATE sesh.sessions SET started_at = LEAST(started_at, $2), ended_at = GREATEST(ended_at, $2) WHERE id = $1`,
-        [sessionId, r.at],
-      );
-    }
+    kept.push(r);
+  }
 
-    let promptId: string | undefined;
-    if (r.promptId) {
-      const length = r.type === "prompt" ? (r.promptLength ?? null) : null;
-      const [p] = await tx.query<{ id: string }>(
-        `INSERT INTO sesh.prompts (id, session_id, external_id, prompt_length, started_at)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (session_id, external_id) DO UPDATE
-           SET started_at = LEAST(sesh.prompts.started_at, $5),
-               prompt_length = COALESCE(sesh.prompts.prompt_length, $4)
-         RETURNING id`,
-        [uuidv7(), sessionId, r.promptId, length, r.at],
-      );
-      promptId = p!.id;
+  // One span per session and one length per prompt, folded from every kept record: the same result as widening the
+  // span and filling the length record by record, since both only ever move one way.
+  const spans = new Map<string, { start: Date; end: Date }>();
+  const prompts = new Map<string, { sessionId: string; externalId: string; length: number | null; start: Date }>();
+  for (const r of kept) {
+    const span = spans.get(r.sessionId);
+    if (!span) spans.set(r.sessionId, { start: r.at, end: r.at });
+    else {
+      if (r.at < span.start) span.start = r.at;
+      if (r.at > span.end) span.end = r.at;
     }
+    if (!r.promptId) continue;
+    const key = `${r.sessionId}\0${r.promptId}`;
+    const length = r.type === "prompt" ? (r.promptLength ?? null) : null;
+    const prompt = prompts.get(key);
+    if (!prompt) prompts.set(key, { sessionId: r.sessionId, externalId: r.promptId, length, start: r.at });
+    else {
+      prompt.length ??= length;
+      if (r.at < prompt.start) prompt.start = r.at;
+    }
+  }
 
-    if (r.type === "event") {
-      const made = await tx.query(
-        `INSERT INTO sesh.events (id, session_id, prompt_id, dedupe_key, kind, occurred_at, model, input_tokens,
-           output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, tool_name, success, raw)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-         ON CONFLICT (session_id, dedupe_key) DO NOTHING RETURNING id`,
-        [
-          uuidv7(),
-          sessionId,
-          promptId ?? null,
-          r.dedupeKey,
-          r.kind,
-          r.at,
-          r.model ?? null,
-          r.inputTokens ?? null,
-          r.outputTokens ?? null,
-          r.cacheReadTokens ?? null,
-          r.cacheWriteTokens ?? null,
-          r.costUsd ?? null,
-          r.durationMs ?? null,
-          r.toolName ?? null,
-          r.success ?? null,
-          r.raw,
-        ],
+  const sessions = new Map<string, string>();
+  if (spans.size) {
+    const ids = [...spans.keys()];
+    const rows = await tx.query<{ id: string; external_id: string }>(
+      `INSERT INTO sesh.sessions (id, org_id, user_id, agent, external_id, started_at, ended_at)
+       SELECT new_id, $1, $2, $3, external_id, started_at, ended_at
+       FROM unnest($4::uuid[], $5::text[], $6::timestamptz[], $7::timestamptz[])
+         AS t(new_id, external_id, started_at, ended_at)
+       ON CONFLICT (org_id, agent, external_id) DO UPDATE
+         SET started_at = LEAST(sesh.sessions.started_at, EXCLUDED.started_at),
+             ended_at = GREATEST(sesh.sessions.ended_at, EXCLUDED.ended_at)
+       RETURNING id, external_id`,
+      [
+        orgId,
+        userId,
+        AGENT,
+        ids.map(() => uuidv7()),
+        ids,
+        ids.map((id) => spans.get(id)!.start.toISOString()),
+        ids.map((id) => spans.get(id)!.end.toISOString()),
+      ],
+    );
+    for (const row of rows) sessions.set(row.external_id, row.id);
+  }
+
+  const promptIds = new Map<string, string>();
+  if (prompts.size) {
+    const list = [...prompts.values()];
+    const rows = await tx.query<{ id: string; session_id: string; external_id: string }>(
+      `INSERT INTO sesh.prompts (id, session_id, external_id, prompt_length, started_at)
+       SELECT id, session_id, external_id, prompt_length, started_at
+       FROM unnest($1::uuid[], $2::uuid[], $3::text[], $4::integer[], $5::timestamptz[])
+         AS t(id, session_id, external_id, prompt_length, started_at)
+       ON CONFLICT (session_id, external_id) DO UPDATE
+         SET started_at = LEAST(sesh.prompts.started_at, EXCLUDED.started_at),
+             prompt_length = COALESCE(sesh.prompts.prompt_length, EXCLUDED.prompt_length)
+       RETURNING id, session_id, external_id`,
+      [
+        list.map(() => uuidv7()),
+        list.map((p) => sessions.get(p.sessionId)),
+        list.map((p) => p.externalId),
+        list.map((p) => p.length),
+        list.map((p) => p.start.toISOString()),
+      ],
+    );
+    const externalSession = new Map([...sessions].map(([external, id]) => [id, external]));
+    for (const row of rows) promptIds.set(`${externalSession.get(row.session_id)}\0${row.external_id}`, row.id);
+  }
+
+  let added = 0;
+  const events = kept.filter((r) => r.type === "event");
+  for (let i = 0; i < events.length; i += EVENT_BATCH) {
+    const batch = events.slice(i, i + EVENT_BATCH);
+    const params: unknown[] = [];
+    const rows = batch.map((r) => {
+      if (r.type !== "event") throw new Error("unreachable");
+      const at = params.length;
+      params.push(
+        uuidv7(),
+        sessions.get(r.sessionId),
+        r.promptId ? (promptIds.get(`${r.sessionId}\0${r.promptId}`) ?? null) : null,
+        r.dedupeKey,
+        r.kind,
+        r.at,
+        r.model ?? null,
+        r.inputTokens ?? null,
+        r.outputTokens ?? null,
+        r.cacheReadTokens ?? null,
+        r.cacheWriteTokens ?? null,
+        r.costUsd ?? null,
+        r.durationMs ?? null,
+        r.toolName ?? null,
+        r.success ?? null,
+        r.raw,
       );
-      added += made.length;
-    }
+      return `(${Array.from({ length: EVENT_COLUMNS }, (_, c) => `$${at + c + 1}`).join(", ")})`;
+    });
+    const made = await tx.query(
+      `INSERT INTO sesh.events (id, session_id, prompt_id, dedupe_key, kind, occurred_at, model, input_tokens,
+         output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, tool_name, success, raw)
+       VALUES ${rows.join(", ")}
+       ON CONFLICT (session_id, dedupe_key) DO NOTHING RETURNING id`,
+      params,
+    );
+    added += made.length;
   }
   return { added, backfillSkipped, turnsAccepted: accepted.size, turnsSkipped: skipped.size };
 }
