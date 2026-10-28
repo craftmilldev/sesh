@@ -33,3 +33,14 @@ export function main(argv: string[]): Promise<void>;
 export function releaseVersion(tag: string): string | undefined;
 /** Whether version `a` is newer than `b`; both are x.y.z. */
 export function isNewer(a: string, b: string): boolean;
+export interface SessionSummary {
+  id: string;
+  started_at: string | null;
+  project: string | null;
+  prompts: number;
+  tokens: number;
+}
+/** What one transcript says about its session, or null when it has no entries. Never includes prompt text. */
+export function parseTranscript(text: string, fallbackId?: string | null): SessionSummary | null;
+/** The sessions in Claude Code's transcripts under CLAUDE_CONFIG_DIR (or ~/.claude), newest first. */
+export function scanSessions(env?: Record<string, string | undefined>): SessionSummary[];
