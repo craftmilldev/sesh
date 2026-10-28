@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../client/home.js";
+import { BarChart } from "../client/chart.js";
 import { Insights } from "../client/insights.js";
 import { Landing } from "../client/landing.js";
 import { Chrome, Page } from "../client/layout.js";
@@ -223,13 +224,13 @@ describe("signed-in pages", () => {
     const chart = container.querySelector("svg.chart")!;
     const bars = [...chart.querySelectorAll<SVGGElement>(".chart-point")];
     expect(bars.map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Wed Oct 21: 1 tool calls",
-      "Thu Oct 22: 2 tool calls",
-      "Fri Oct 23: 3 tool calls",
-      "Sat Oct 24: 4 tool calls",
-      "Sun Oct 25: 5 tool calls",
-      "Mon Oct 26: 6 tool calls",
-      "Tue Oct 27: 7 tool calls",
+      "Wed Oct 21: Tool calls: 1",
+      "Thu Oct 22: Tool calls: 2",
+      "Fri Oct 23: Tool calls: 3",
+      "Sat Oct 24: Tool calls: 4",
+      "Sun Oct 25: Tool calls: 5",
+      "Mon Oct 26: Tool calls: 6",
+      "Tue Oct 27: Tool calls: 7",
     ]);
     const ticks = [...chart.querySelectorAll(".chart-tick.day")].map((t) => t.textContent);
     expect(ticks).toEqual(["W21Oct", "T22", "F23", "S24", "S25", "M26", "T27today"]);
@@ -238,9 +239,9 @@ describe("signed-in pages", () => {
     expect(container.querySelector(".chart-tip")).toBeNull();
 
     await act(async () => bars[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
-    expect(container.querySelector(".chart-tip")!.textContent).toBe("Thu Oct 222 tool calls");
+    expect(container.querySelector(".chart-tip")!.textContent).toBe("Thu Oct 22Tool calls: 2");
     await act(async () => bars[3]!.focus());
-    expect(container.querySelector(".chart-tip")!.textContent).toBe("Sat Oct 244 tool calls");
+    expect(container.querySelector(".chart-tip")!.textContent).toBe("Sat Oct 24Tool calls: 4");
     await act(async () => bars[3]!.blur());
     expect(container.querySelector(".chart-tip")).toBeNull();
     history.replaceState(null, "", "/");
@@ -253,9 +254,21 @@ describe("signed-in pages", () => {
     const ticks = [...container.querySelector("svg.chart")!.querySelectorAll(".chart-tick.day")].map(
       (t) => t.textContent,
     );
-    expect(ticks).toHaveLength(14);
+    expect(ticks).toHaveLength(15);
     expect(ticks.at(-1)).toBe("T27today");
     history.replaceState(null, "", "/");
+  });
+
+  it("keeps the month name on the 1st even when thinning would skip that day", async () => {
+    // Ends Nov 2, so Nov 1 is one day back: an odd offset the every-other-day thinning would skip.
+    const values = Array.from({ length: 28 }, (_, i) => ({
+      day: new Date(Date.UTC(2026, 10, 2 - (27 - i))).toISOString().slice(0, 10),
+      value: i,
+    }));
+    await act(async () => root.render(<BarChart title="Prompts" values={values} />));
+    const ticks = [...container.querySelectorAll(".chart-tick.day")].map((t) => t.textContent);
+    expect(ticks).toContain("S1Nov");
+    expect(ticks.at(-1)).toBe("M2today");
   });
 
   it("starts the insights page on the range in the URL", async () => {

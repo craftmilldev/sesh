@@ -54,7 +54,7 @@ function Chart({ title, values, kind }: Props & { kind: "bar" | "line" }) {
   const todayValue = values[n - 1]!.value;
   // Thin the ticks to stay legible: every other day at 28, counting back from today.
   const every = n > 14 ? 2 : 1;
-  const label = (p: Point) => `${dayLabel(p.day)}: ${num(p.value)} ${title.toLowerCase()}`;
+  const label = (p: Point) => `${dayLabel(p.day)}: ${title}: ${num(p.value)}`;
   const tip = active === undefined ? undefined : values[active]!;
 
   return (
@@ -91,8 +91,8 @@ function Chart({ title, values, kind }: Props & { kind: "bar" | "line" }) {
           {values.map((v, i) => {
             const isToday = i === n - 1;
             const d = parse(v.day);
-            const showTick = (n - 1 - i) % every === 0;
             const first = i === 0 || d.getUTCDate() === 1;
+            const showTick = first || (n - 1 - i) % every === 0;
             return (
               <g
                 key={v.day}
@@ -147,7 +147,7 @@ function Chart({ title, values, kind }: Props & { kind: "bar" | "line" }) {
           >
             <span className="chart-tip-day">{dayLabel(tip.day)}</span>
             <span className="chart-tip-value">
-              {num(tip.value)} {title.toLowerCase()}
+              {title}: {num(tip.value)}
             </span>
           </div>
         )}
