@@ -44,3 +44,25 @@ export interface SessionSummary {
 export function parseTranscript(text: string, fallbackId?: string | null): SessionSummary | null;
 /** The sessions in Claude Code's transcripts under CLAUDE_CONFIG_DIR (or ~/.claude), newest first. */
 export function scanSessions(env?: Record<string, string | undefined>): SessionSummary[];
+export type TranscriptEntry = Record<string, unknown>;
+export interface TurnRecord {
+  name: "user_prompt" | "api_request" | "tool_result";
+  at: number;
+  attrs: Record<string, string | number | boolean>;
+}
+export interface Turn {
+  promptId: string;
+  records: TurnRecord[];
+}
+/** Every entry of one session across its transcripts, oldest first, each with `_at` (ms). */
+export function readSessionEntries(sessionId: string, env?: Record<string, string | undefined>): TranscriptEntry[];
+/** The turns of a session as the events Claude Code would have logged live. Never includes prompt text. */
+export function buildTurns(entries: TranscriptEntry[], sessionId: string): Turn[];
+/** OTLP/JSON logs payloads (`sesh.source=backfill`), each under `maxBytes`, broken between turns only. */
+export function buildPayloads(
+  turns: Turn[],
+  sessionId: string,
+  maxBytes?: number,
+): { payloads: Record<string, unknown>[]; events: number; dropped: number };
+/** Where upload posts: the configured server's /v1/logs. */
+export function logsUrl(to: Target | null): string | null;

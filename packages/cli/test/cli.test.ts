@@ -6,12 +6,16 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  buildPayloads,
+  buildTurns,
   formatBar,
   isNewer,
   isSeshCommand,
   parseInput,
   parseTranscript,
+  logsUrl,
   readConfig,
+  readSessionEntries,
   releaseVersion,
   reportable,
   scanSessions,
@@ -415,5 +419,226 @@ describe("sessions", () => {
     const out = await h.sesh("sessions");
     expect(out.code).toBe(0);
     expect(out.stdout).toContain("No Claude Code sessions found");
+  });
+});
+
+interface LogsPayload {
+  resourceLogs: {
+    resource: { attributes: unknown[] };
+    scopeLogs: { logRecords: { timeUnixNano: string; attributes: unknown[] }[] }[];
+  }[];
+}
+const logsOf = (p: unknown) => p as LogsPayload;
+
+describe("upload", () => {
+  const line = (o: object) => JSON.stringify(o);
+  const SECRET = "my secret prompt text";
+  const TOOL_SECRET = "cat /etc/secret-file";
+  const transcript = [
+    line({
+      type: "user",
+      uuid: "u1",
+      promptId: "p-1",
+      sessionId: "s-up",
+      cwd: "/work/app",
+      gitBranch: "main",
+      timestamp: "2026-10-01T10:00:00.000Z",
+      message: { content: SECRET },
+    }),
+    line({
+      type: "assistant",
+      uuid: "a1",
+      parentUuid: "u1",
+      sessionId: "s-up",
+      timestamp: "2026-10-01T10:00:03.000Z",
+      message: {
+        id: "m1",
+        model: "claude-opus-4-5",
+        usage: { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 5, cache_read_input_tokens: 7 },
+        content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: TOOL_SECRET } }],
+      },
+    }),
+    // The same message again for its second content block.
+    line({
+      type: "assistant",
+      uuid: "a2",
+      parentUuid: "u1",
+      sessionId: "s-up",
+      timestamp: "2026-10-01T10:00:04.000Z",
+      message: {
+        id: "m1",
+        model: "claude-opus-4-5",
+        usage: { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 5, cache_read_input_tokens: 7 },
+        content: [{ type: "text", text: "reply text" }],
+      },
+    }),
+    line({
+      type: "user",
+      uuid: "u2",
+      parentUuid: "a2",
+      sessionId: "s-up",
+      timestamp: "2026-10-01T10:00:06.500Z",
+      message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "file contents" }] },
+    }),
+    "{broken",
+    line({
+      type: "user",
+      uuid: "u3",
+      sessionId: "s-up",
+      timestamp: "2026-10-01T10:05:00.000Z",
+      message: { content: [{ type: "text", text: SECRET }] },
+    }),
+    line({
+      type: "assistant",
+      uuid: "a3",
+      parentUuid: "u3",
+      sessionId: "s-up",
+      timestamp: "2026-10-01T10:05:02.000Z",
+      message: { id: "m2", model: "<synthetic>", usage: { input_tokens: 1, output_tokens: 1 } },
+    }),
+    line({
+      type: "assistant",
+      uuid: "a4",
+      parentUuid: "u3",
+      sessionId: "s-up",
+      timestamp: "2026-10-01T10:05:03.000Z",
+      message: { id: "m3", model: "claude-haiku-4-5", usage: { input_tokens: 3, output_tokens: 4 } },
+    }),
+  ].join("\n");
+
+  function setup(extraEnv: Record<string, string> = {}) {
+    const h = home({ SESH_NO_UPDATE: "1", ...extraEnv });
+    const dir = join(h.root, ".claude", "projects", "-work-app");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "s-up.jsonl"), transcript);
+    return h;
+  }
+
+  it("builds a turn per prompt with the tokens, tool calls and durations, and no text", () => {
+    const h = setup();
+    const turns = buildTurns(readSessionEntries("s-up", h.env), "s-up");
+    expect(turns.map((t) => t.promptId)).toEqual(["p-1", "u3"]);
+    expect(turns[0]!.records).toEqual([
+      { name: "user_prompt", at: Date.parse("2026-10-01T10:00:00Z"), attrs: { prompt_length: SECRET.length } },
+      {
+        name: "api_request",
+        at: Date.parse("2026-10-01T10:00:04Z"),
+        started: Date.parse("2026-10-01T10:00:00Z"),
+        attrs: {
+          input_tokens: 10,
+          output_tokens: 20,
+          cache_read_tokens: 7,
+          cache_creation_tokens: 5,
+          model: "claude-opus-4-5",
+          duration_ms: 4000,
+        },
+      },
+      {
+        name: "tool_result",
+        at: Date.parse("2026-10-01T10:00:06.500Z"),
+        attrs: { success: false, tool_name: "Bash", duration_ms: 3500 },
+      },
+    ]);
+    expect(turns[1]!.records.map((r) => r.name)).toEqual(["user_prompt", "api_request"]);
+    const out = JSON.stringify(buildPayloads(turns, "s-up").payloads);
+    for (const leak of [SECRET, TOOL_SECRET, "reply text", "file contents", "/work/app", "main"])
+      expect(out).not.toContain(leak);
+  });
+
+  it("marks the payload as a backfill and keeps the original timestamps", () => {
+    const h = setup();
+    const { payloads, events } = buildPayloads(buildTurns(readSessionEntries("s-up", h.env), "s-up"), "s-up");
+    expect(events).toBe(5);
+    const rl = logsOf(payloads[0]).resourceLogs[0]!;
+    expect(rl.resource.attributes).toEqual([{ key: "sesh.source", value: { stringValue: "backfill" } }]);
+    const first = rl.scopeLogs[0]!.logRecords[0]!;
+    expect(first.timeUnixNano).toBe(String(Date.parse("2026-10-01T10:00:00Z") * 1_000_000));
+    expect(first.attributes).toContainEqual({
+      key: "event.timestamp",
+      value: { stringValue: "2026-10-01T10:00:00.000Z" },
+    });
+  });
+
+  it("splits large sessions under the cap, between turns", () => {
+    const entries = Array.from({ length: 40 }, (_, i) => [
+      { type: "user", uuid: `u${i}`, sessionId: "big", _at: i * 1000, message: { content: "hi" } },
+      {
+        type: "assistant",
+        uuid: `a${i}`,
+        parentUuid: `u${i}`,
+        sessionId: "big",
+        _at: i * 1000 + 1,
+        message: { id: `m${i}`, model: "x", usage: { input_tokens: 1 } },
+      },
+    ]).flat();
+    const turns = buildTurns(entries, "big");
+    const { payloads, events, dropped } = buildPayloads(turns, "big", 4000);
+    expect(payloads.length).toBeGreaterThan(5);
+    expect(events).toBe(80);
+    expect(dropped).toBe(0);
+    for (const p of payloads) {
+      expect(JSON.stringify(p).length).toBeLessThanOrEqual(4000);
+      // Both of a turn's records are in the same request.
+      expect(logsOf(p).resourceLogs[0]!.scopeLogs[0]!.logRecords.length % 2).toBe(0);
+    }
+    expect(buildPayloads(turns, "big", 400).dropped).toBe(2 * 40);
+  });
+
+  it("posts to /v1/logs with the bearer token, and says plainly when the token is rejected", async () => {
+    const seen: { url?: string; auth?: string; body: string }[] = [];
+    let status = 200;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        seen.push({ url: req.url, auth: req.headers.authorization, body });
+        res.statusCode = status;
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const h = setup({ SESH_URL: `http://127.0.0.1:${port}`, SESH_TOKEN: "tok-1" });
+      const ok = await h.sesh("upload", "s-up");
+      expect(ok.code).toBe(0);
+      expect(ok.stdout).toContain("Sent 5 events from 2 turns");
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ url: "/v1/logs", auth: "Bearer tok-1" });
+      expect(seen[0]!.body).not.toContain(SECRET);
+
+      status = 401;
+      const denied = await h.sesh("upload", "s-up");
+      expect(denied.code).toBe(1);
+      expect(denied.stderr).toContain("rejected the token (401)");
+
+      seen.length = 0;
+      const dry = await h.sesh("upload", "s-up", "--dry-run");
+      expect(dry.code).toBe(0);
+      expect(seen).toHaveLength(0);
+      expect(logsOf(JSON.parse(dry.stdout)).resourceLogs[0]!.scopeLogs[0]!.logRecords).toHaveLength(5);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("fails clearly with no config, no session id or an unknown session; dry-run needs no config", async () => {
+    const h = setup();
+    const none = await h.sesh("upload", "s-up");
+    expect(none.code).toBe(1);
+    expect(none.stderr).toContain("No sesh to send to");
+    expect((await h.sesh("upload")).stderr).toContain("Usage: sesh upload");
+    const missing = await home({ SESH_NO_UPDATE: "1", SESH_URL: "http://127.0.0.1:1", SESH_TOKEN: "t" }).sesh(
+      "upload",
+      "nope",
+    );
+    expect(missing.stderr).toContain("No Claude Code session nope");
+    expect((await h.sesh("upload", "s-up", "--dry-run")).code).toBe(0);
+  });
+
+  it("posts to the server's /v1/logs whatever path the saved url has", () => {
+    expect(logsUrl({ url: "https://sesh.example/v1/limits", token: "t" })).toBe("https://sesh.example/v1/logs");
+    expect(logsUrl({ url: "https://x.example/otel/v1/limits", token: "t" })).toBe("https://x.example/otel/v1/logs");
+    expect(logsUrl(null)).toBeNull();
   });
 });

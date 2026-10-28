@@ -5,6 +5,7 @@
 //
 //   sesh status              what is set up: server, token, status line, last reading, updates
 //   sesh sessions            list the Claude Code sessions on this machine (reads local files only)
+//   sesh upload <session>    send one past session to sesh as OTel logs (--dry-run prints them and sends nothing)
 //   sesh setup               save the server and token, and make sesh Claude Code's status line
 //   sesh statusline [on|off] with no argument: the status line itself (what Claude Code runs); on/off: manage it
 //   sesh config [set k v]    show the settings, or change url, token or auto_update
@@ -15,6 +16,7 @@
 // and SESH_TOKEN override that; the OTel variables are the last resort. It never fails or waits on the network: the
 // post, and any update, happen in a detached child.
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   createReadStream,
@@ -627,6 +629,242 @@ function sessionsCommand() {
   }
 }
 
+// --- upload: one past session as OTel ----------------------------------------------------------------------------
+
+/** Under the server's 4 MB cap on one ingest request, with room for the envelope. */
+const MAX_PAYLOAD_BYTES = 3_500_000;
+const UPLOAD_TIMEOUT_MS = 60_000;
+
+/** Every entry of one session across its transcripts (the main one and its subagents'), oldest first. */
+export function readSessionEntries(sessionId, env = process.env) {
+  const entries = [];
+  for (const file of findTranscripts(join(claudeDir(env), "projects"))) {
+    let text;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const base = basename(file, ".jsonl");
+    for (const raw of text.split("\n")) {
+      let entry;
+      try {
+        entry = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (!entry || typeof entry.type !== "string") continue;
+      if ((typeof entry.sessionId === "string" ? entry.sessionId : base) !== sessionId) continue;
+      const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+      if (!Number.isNaN(at)) entries.push({ entry, at, order: entries.length });
+    }
+  }
+  return entries.sort((a, b) => a.at - b.at || a.order - b.order).map((e) => ({ ...e.entry, _at: e.at }));
+}
+
+const blocks = (entry) => (Array.isArray(entry.message?.content) ? entry.message.content : []);
+
+/** How many characters the person typed in a prompt entry. The text itself is never kept. */
+function promptLength(entry) {
+  const content = entry.message?.content;
+  if (typeof content === "string") return content.length;
+  return blocks(entry).reduce((n, c) => (c?.type === "text" ? n + String(c.text ?? "").length : n), 0);
+}
+
+/**
+ * The turns of a session as the events Claude Code would have logged live: per prompt, a `user_prompt` (its length
+ * only), an `api_request` for each assistant message (model, tokens, duration) and a `tool_result` for each tool call
+ * (name, success, duration). Returns `[{ promptId, records: [{ name, at, attrs }] }]`. Nothing the person typed,
+ * no tool input or output and nothing about who they are is read into a record.
+ */
+export function buildTurns(entries, sessionId) {
+  const turns = [];
+  let turn = null;
+  const byUuid = new Map();
+  const tools = new Map();
+  const messages = new Map();
+  for (const entry of entries) {
+    if (typeof entry.uuid === "string") byUuid.set(entry.uuid, entry._at);
+    if (isPrompt(entry)) {
+      const promptId =
+        typeof entry.promptId === "string" && entry.promptId
+          ? entry.promptId
+          : typeof entry.uuid === "string" && entry.uuid
+            ? entry.uuid
+            : createHash("sha256").update(`${sessionId}\0${entry._at}`).digest("hex").slice(0, 32);
+      turn = { promptId, records: [] };
+      turns.push(turn);
+      turn.records.push({
+        name: "user_prompt",
+        at: entry._at,
+        attrs: { prompt_length: promptLength(entry) },
+      });
+      continue;
+    }
+    if (!turn) continue;
+    if (entry.type === "assistant" && entry.message && typeof entry.message === "object") {
+      const m = entry.message;
+      if (m.model === "<synthetic>" || entry.isApiErrorMessage) continue;
+      for (const c of blocks(entry))
+        if (c?.type === "tool_use" && c.id && !tools.has(c.id)) tools.set(c.id, { name: c.name, at: entry._at });
+      const u = m.usage && typeof m.usage === "object" ? m.usage : null;
+      if (!u) continue;
+      // Claude Code writes a message once per content block: one api_request, from the first block's parent to the last block.
+      const key = m.id ?? `entry-${turn.records.length}`;
+      let rec = messages.get(key);
+      if (!rec) {
+        const started = typeof entry.parentUuid === "string" ? byUuid.get(entry.parentUuid) : undefined;
+        rec = { name: "api_request", at: entry._at, attrs: {}, started };
+        messages.set(key, rec);
+        turn.records.push(rec);
+      }
+      rec.at = entry._at;
+      const attrs = { input_tokens: count(u.input_tokens), output_tokens: count(u.output_tokens) };
+      attrs.cache_read_tokens = count(u.cache_read_input_tokens);
+      attrs.cache_creation_tokens = count(u.cache_creation_input_tokens);
+      if (typeof m.model === "string" && m.model) attrs.model = m.model;
+      if (typeof entry.costUSD === "number" && Number.isFinite(entry.costUSD)) attrs.cost_usd = entry.costUSD;
+      if (rec.started !== undefined && entry._at >= rec.started) attrs.duration_ms = entry._at - rec.started;
+      rec.attrs = attrs;
+      continue;
+    }
+    if (entry.type === "user") {
+      for (const c of blocks(entry)) {
+        if (c?.type !== "tool_result") continue;
+        const tool = tools.get(c.tool_use_id);
+        const attrs = { success: c.is_error !== true };
+        if (tool?.name) attrs.tool_name = String(tool.name);
+        if (tool) attrs.duration_ms = Math.max(0, entry._at - tool.at);
+        turn.records.push({ name: "tool_result", at: entry._at, attrs });
+      }
+    }
+  }
+  return turns;
+}
+
+function otlpValue(v) {
+  if (typeof v === "string") return { stringValue: v };
+  if (typeof v === "boolean") return { boolValue: v };
+  return Number.isInteger(v) ? { intValue: String(v) } : { doubleValue: v };
+}
+
+function otlpRecord(sessionId, promptId, r) {
+  const attrs = {
+    "event.name": r.name,
+    "event.timestamp": new Date(r.at).toISOString(),
+    "session.id": sessionId,
+    "prompt.id": promptId,
+    ...r.attrs,
+  };
+  return {
+    timeUnixNano: String(BigInt(r.at) * 1_000_000n),
+    body: { stringValue: `claude_code.${r.name}` },
+    attributes: Object.entries(attrs).map(([key, v]) => ({ key, value: otlpValue(v) })),
+  };
+}
+
+const envelope = (logRecords) => ({
+  resourceLogs: [
+    {
+      resource: { attributes: [{ key: "sesh.source", value: { stringValue: "backfill" } }] },
+      scopeLogs: [{ scope: { name: "sesh.upload" }, logRecords }],
+    },
+  ],
+});
+
+/**
+ * OTLP/JSON logs payloads for a session, each under `maxBytes`. Payloads break between turns, never inside one:
+ * the server skips a turn it already has events for, so a turn cut in two would lose its second half. A single
+ * turn bigger than `maxBytes` is cut anyway, and `dropped` counts the records that therefore can't be sent.
+ */
+export function buildPayloads(turns, sessionId, maxBytes = MAX_PAYLOAD_BYTES) {
+  const overhead = JSON.stringify(envelope([])).length;
+  const payloads = [];
+  let batch = [];
+  let size = overhead;
+  let dropped = 0;
+  let events = 0;
+  const flush = () => {
+    if (batch.length) payloads.push(envelope(batch));
+    batch = [];
+    size = overhead;
+  };
+  for (const t of turns) {
+    const rows = t.records.map((r) => {
+      const row = otlpRecord(sessionId, t.promptId, r);
+      return { row, bytes: JSON.stringify(row).length + 1 };
+    });
+    const total = rows.reduce((n, r) => n + r.bytes, 0);
+    if (size + total > maxBytes) flush();
+    if (total > maxBytes - overhead) {
+      let used = overhead;
+      for (const { row, bytes } of rows) {
+        if (used + bytes > maxBytes) dropped++;
+        else {
+          batch.push(row);
+          used += bytes;
+        }
+      }
+      size = used;
+      flush();
+    } else {
+      for (const { row } of rows) batch.push(row);
+      size += total;
+    }
+    events += t.records.length;
+  }
+  flush();
+  return { payloads, events: events - dropped, dropped };
+}
+
+/** Where upload posts: the configured server's /v1/logs. Null when there is no server set up. */
+export function logsUrl(to) {
+  return to ? to.url.replace(/\/v1\/limits$/, "") + "/v1/logs" : null;
+}
+
+async function uploadCommand(args, { fetchFn = fetch } = {}) {
+  const dryRun = args.includes("--dry-run");
+  const sessionId = args.find((a) => !a.startsWith("--"));
+  if (!sessionId) throw new Error("Usage: sesh upload <session-id> [--dry-run]  (`sesh sessions` lists the ids)");
+  const to = target();
+  if (!dryRun && !to)
+    throw new Error("No sesh to send to. Run `sesh setup` (or set SESH_URL and SESH_TOKEN) and try again.");
+  const entries = readSessionEntries(sessionId);
+  if (!entries.length)
+    throw new Error(`No Claude Code session ${sessionId} found in ${join(claudeDir(), "projects")}.`);
+  const turns = buildTurns(entries, sessionId);
+  const { payloads, events, dropped } = buildPayloads(turns, sessionId);
+  if (dropped) console.error(`sesh: a turn is too large to send whole; ${dropped} of its events are left out.`);
+  if (dryRun) {
+    for (const p of payloads) console.log(JSON.stringify(p, null, 2));
+    console.error(`Dry run: ${events} events in ${turns.length} turns, ${payloads.length} requests. Nothing was sent.`);
+    return;
+  }
+  const url = logsUrl(to);
+  for (const [i, payload] of payloads.entries()) {
+    let res;
+    try {
+      res = await fetchFn(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${to.token}` },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw new Error(`Could not reach ${new URL(url).origin}: ${err instanceof Error ? err.message : String(err)}`, {
+        cause: err,
+      });
+    }
+    if (res.status === 401)
+      throw new Error("sesh rejected the token (401). Check it on sesh's Tokens tab, then run `sesh setup` again.");
+    if (!res.ok) throw new Error(`sesh answered ${res.status} for request ${i + 1} of ${payloads.length}.`);
+  }
+  console.log(
+    `Sent ${events} events from ${turns.length} turns of ${sessionId} in ${payloads.length} ` +
+      `${payloads.length === 1 ? "request" : "requests"}. Turns sesh already has are skipped by the server.`,
+  );
+}
+
 /** Flags of the form `--name value` and `--name`, and the plain words. */
 function parseArgs(args) {
   const flags = {};
@@ -690,6 +928,7 @@ const HELP = `sesh ${VERSION}: session insights for Claude Code teams
 
   sesh status              what is set up: server, token, status line, last reading, updates
   sesh sessions            list the Claude Code sessions on this machine (local files only, no network)
+  sesh upload <session-id> send one past session to sesh as OTel logs (--dry-run prints them, sends nothing)
   sesh setup [--replace]   save the server and token (from the OTel settings, or --url and --token) and make sesh
                            Claude Code's status line
   sesh statusline on|off   make sesh Claude Code's status line, or remove it
@@ -707,9 +946,12 @@ export async function main(argv) {
   if (command === "statusline" && rest[0] === "--background") return runBackground();
   // Changing the settings is how updates get turned off, so it never waits on one;
   // sessions reads local files only, so it never touches the network.
-  if (command !== "config" && command !== "sessions") await updateBeforeCommand(argv);
+  // A dry-run upload makes no request at all.
+  const quiet = command === "config" || command === "sessions" || (command === "upload" && rest.includes("--dry-run"));
+  if (!quiet) await updateBeforeCommand(argv);
   if (command === "status") return statusCommand();
   if (command === "sessions") return sessionsCommand();
+  if (command === "upload") return uploadCommand(rest);
   if (command === "setup") return setupCommand(rest);
   if (command === "update") return updateCommand();
   if (command === "config") return configCommand(rest);
