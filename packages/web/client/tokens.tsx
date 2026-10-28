@@ -56,6 +56,11 @@ OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${token}"`;
         Your tokens let Claude Code send {org.name} its session events. Make one per machine, and revoke it when the
         machine is gone.
       </p>
+      <p className="muted">
+        To backfill sessions from before you set this up, install the sesh command with{" "}
+        <code>curl -fsSL https://raw.githubusercontent.com/craftmilldev/sesh/main/install.sh | sh</code>, then run{" "}
+        <code>sesh sessions</code> to see them and <code>sesh upload --all</code> to send them. Re-running it is safe.
+      </p>
       {error && <p className="notice error">{error}</p>}
       {!org.counts_toward_team ? (
         <p className="muted">
