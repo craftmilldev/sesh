@@ -11,6 +11,7 @@ import {
   formatBar,
   isNewer,
   isSeshCommand,
+  parseChoice,
   parseInput,
   parseTranscript,
   logsUrl,
@@ -19,9 +20,11 @@ import {
   releaseVersion,
   reportable,
   scanSessions,
+  selectSessions,
   serverOrigin,
   target,
   updatesEnabled,
+  uploadSummary,
   VERSION,
 } from "../sesh.mjs";
 
@@ -634,6 +637,126 @@ describe("upload", () => {
     );
     expect(missing.stderr).toContain("No Claude Code session nope");
     expect((await h.sesh("upload", "s-up", "--dry-run")).code).toBe(0);
+  });
+
+  const summary = (project: string, id: string, startedAt: string | null) => ({
+    id,
+    started_at: startedAt,
+    project,
+    prompts: 1,
+    tokens: 1,
+  });
+  const many = [
+    summary("/work/app", "a", "2026-10-03T00:00:00.000Z"),
+    summary("/work/api", "b", "2026-10-01T00:00:00.000Z"),
+    summary("/other/app", "c", "2026-09-01T00:00:00.000Z"),
+    summary("/work/app", "d", null),
+  ];
+  const ids = (s: { id: string }[]) => s.map((x) => x.id);
+
+  it("selects sessions with --all, --since and --project, and nothing without one", () => {
+    expect(ids(selectSessions(many, { all: true }))).toEqual(["a", "b", "c", "d"]);
+    expect(ids(selectSessions(many))).toEqual([]);
+    expect(ids(selectSessions(many, { since: "2026-10-01" }))).toEqual(["a", "b"]);
+    expect(ids(selectSessions(many, { project: "app" }))).toEqual(["a", "c", "d"]);
+    expect(ids(selectSessions(many, { since: "2026-09-15", project: "/work/app" }))).toEqual(["a"]);
+    expect(() => selectSessions(many, { since: "last week" })).toThrow("--since needs a date");
+  });
+
+  it("reads a pick like 1,3-4 or all, and refuses what is not on the list", () => {
+    expect(parseChoice("1, 3-4", 5)).toEqual([0, 2, 3]);
+    expect(parseChoice("all", 3)).toEqual([0, 1, 2]);
+    expect(parseChoice("3 1 1", 3)).toEqual([0, 2]);
+    for (const bad of ["0", "6", "4-2", "x", "1-9"]) expect(parseChoice(bad, 5)).toBeNull();
+  });
+
+  it("summarises accepted, skipped and failed", () => {
+    expect(uploadSummary({ sent: 2, accepted: 5, skipped: 3, failed: 1, events: 40 })).toBe(
+      "Sent 2 sessions (40 events): 5 turns accepted, 3 already known, 1 session failed.",
+    );
+  });
+
+  it("uploads the chosen sessions, reports accepted and skipped, and goes on past a failure", async () => {
+    const known = new Set<string>();
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        if (body.includes('"s-bad"')) {
+          res.statusCode = 500;
+          return void res.end("{}");
+        }
+        let accepted = 0;
+        let skipped = 0;
+        const turns = new Set(
+          [
+            ...body.matchAll(
+              /"key":"session\.id","value":\{"stringValue":"([^"]+)"\}\},\{"key":"prompt\.id","value":\{"stringValue":"([^"]+)"/g,
+            ),
+          ].map((m) => `${m[1]}/${m[2]}`),
+        );
+        for (const t of turns) {
+          if (known.has(t)) skipped++;
+          else {
+            known.add(t);
+            accepted++;
+          }
+        }
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ sesh: { turns_accepted: accepted, turns_skipped: skipped } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const h = setup({ SESH_URL: `http://127.0.0.1:${port}`, SESH_TOKEN: "tok-1" });
+      const dir = join(h.root, ".claude", "projects", "-other");
+      mkdirSync(dir, { recursive: true });
+      const other = (id: string) =>
+        [
+          line({
+            type: "user",
+            uuid: `${id}-u`,
+            promptId: `${id}-p`,
+            sessionId: id,
+            cwd: "/other/place",
+            timestamp: "2026-09-01T10:00:00.000Z",
+            message: { content: "hi" },
+          }),
+        ].join("\n");
+      writeFileSync(join(dir, "s-bad.jsonl"), other("s-bad"));
+      writeFileSync(join(dir, "s-two.jsonl"), other("s-two"));
+
+      const first = await h.sesh("upload", "--all");
+      expect(first.code).toBe(1);
+      expect(first.stderr).toContain("s-bad: failed: sesh answered 500");
+      expect(first.stdout).toContain(
+        "Sent 2 sessions (6 events): 3 turns accepted, 0 already known, 1 session failed.",
+      );
+
+      const again = await h.sesh("upload", "--project", "/work/app");
+      expect(again.code).toBe(0);
+      expect(again.stdout).toContain("1 session (5 events): 0 turns accepted, 2 already known, 0 sessions failed.");
+
+      const dry = await h.sesh("upload", "--since", "2026-09-15", "--dry-run");
+      expect(dry.code).toBe(0);
+      expect(dry.stderr).toContain("Dry run: 5 events from 1 session");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("without a terminal and without flags, or with a bad flag, exits with a usage message", async () => {
+    const h = setup({ SESH_URL: "http://127.0.0.1:1", SESH_TOKEN: "t" });
+    const bare = await h.sesh("upload");
+    expect(bare.code).toBe(1);
+    expect(bare.stderr).toContain("Usage: sesh upload");
+    expect((await h.sesh("upload", "s-up", "--all")).stderr).toContain("Usage: sesh upload");
+    expect((await h.sesh("upload", "--since")).stderr).toContain("Usage: sesh upload");
+    expect((await h.sesh("upload", "--since", "soon")).stderr).toContain("--since needs a date");
+    const none = await h.sesh("upload", "--project", "/nowhere");
+    expect(none.code).toBe(0);
+    expect(none.stdout).toContain("No sessions selected");
   });
 
   it("posts to the server's /v1/logs whatever path the saved url has", () => {

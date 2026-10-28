@@ -498,7 +498,7 @@ export function createApp(opts: AppOptions) {
       }
     }
 
-    await store.storeRawPayload(db, {
+    const payloadId = await store.storeRawPayload(db, {
       ...who,
       signal,
       contentType,
@@ -506,11 +506,22 @@ export function createApp(opts: AppOptions) {
       body,
     });
     await metrics.capture("ingest_accepted", who.userId, { signal, format, gzip: encoding === "gzip" });
-    // Parse logs right away, and sweep up any earlier payload whose parse failed. The raw payload is already safe,
-    // so a failure here is only counted.
+    // Parse logs right away, then sweep up any earlier payload whose parse failed. The raw payload is already safe,
+    // so a failure here is only counted. A backfill upload gets the turn counts of its own payload back, which
+    // `sesh upload` prints (not the swept ones, which may be another org's); live payloads get `{}`.
+    let backfillTurns: { turns_accepted: number; turns_skipped: number } | undefined;
     if (signal === "logs") {
       try {
-        const r = await parsePending(db);
+        const own = await parsePending(db, payloadId);
+        if (own.turnsAccepted || own.turnsSkipped)
+          backfillTurns = { turns_accepted: own.turnsAccepted, turns_skipped: own.turnsSkipped };
+        const swept = await parsePending(db);
+        const r = {
+          parsed: own.parsed + swept.parsed,
+          skipped: own.skipped + swept.skipped,
+          backfillSkipped: own.backfillSkipped + swept.backfillSkipped,
+          failed: own.failed + swept.failed,
+        };
         if (r.backfillSkipped)
           await metrics.capture("backfill_records_skipped", who.userId, {
             reason: "turn_already_stored",
@@ -540,8 +551,10 @@ export function createApp(opts: AppOptions) {
         await metrics.capture("plan_usage_parse_failed", who.userId, { format });
       }
     }
-    // An empty OTLP success response: `{}` for JSON, zero bytes for protobuf.
-    return format === "json" ? c.json({}) : c.body(null, 200, { "content-type": "application/x-protobuf" });
+    // An OTLP success response: `{}` for JSON (plus the backfill counts above), zero bytes for protobuf.
+    return format === "json"
+      ? c.json(backfillTurns ? { sesh: backfillTurns } : {})
+      : c.body(null, 200, { "content-type": "application/x-protobuf" });
   };
   // Plan usage from the status line script. Only the session id, the two windows and the time are kept.
   app.post("/v1/limits", async (c) => {
