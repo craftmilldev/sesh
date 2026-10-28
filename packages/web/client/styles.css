@@ -839,6 +839,78 @@ button.ghost:hover:not(:disabled) {
   background: var(--ink-900);
   color: var(--paper-100);
 }
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--ink-900);
+  background: transparent;
+  color: var(--ink-900);
+  font: 13px var(--mono);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.chip[aria-pressed="false"] {
+  border-color: var(--ink-300);
+  color: var(--ink-500);
+}
+.chip[aria-pressed="false"] .chip-swatch {
+  opacity: 0.4;
+}
+.chip[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.chip-swatch .chart-line {
+  stroke-width: 2;
+}
+.s-prompts .chart-line {
+  stroke: var(--ink-900);
+}
+.s-prompts .chart-dot {
+  fill: var(--ink-900);
+}
+.s-tools .chart-line {
+  stroke: var(--madder-600);
+  stroke-dasharray: 7 3;
+}
+.s-tools .chart-dot {
+  fill: var(--madder-600);
+}
+.s-sessions .chart-line {
+  stroke: var(--ink-400);
+  stroke-dasharray: 2 3;
+}
+.s-sessions .chart-dot {
+  fill: var(--ink-400);
+}
+.s-ratio .chart-line {
+  stroke: var(--madder-500);
+  stroke-dasharray: 10 3 2 3;
+}
+.s-ratio .chart-dot {
+  fill: var(--madder-500);
+}
+.chart-guide {
+  stroke: var(--ink-500);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+.chart-axis-title {
+  font: 10px var(--mono);
+  fill: var(--ink-500);
+}
+.chart-tip-value.s-prompts,
+.chart-tip-value.s-tools,
+.chart-tip-value.s-sessions,
+.chart-tip-value.s-ratio {
+  color: var(--paper-100);
+}
 .chart-block {
   margin-top: 24px;
 }

@@ -278,7 +278,9 @@ describe("insights activity", () => {
       [0, 0, 0],
       [2, 2, 2],
     ]);
-    expect(body.today).toEqual({ tool_calls: 2, prompts: 2, active_sessions: 2 });
+    // Tool calls per prompt: a gap (null) on days with no prompts, else the ratio.
+    expect(body.days.map((d) => d.tool_calls_per_prompt)).toEqual([null, 2, null, null, null, null, 1]);
+    expect(body.today).toEqual({ tool_calls: 2, prompts: 2, active_sessions: 2, tool_calls_per_prompt: 1 });
     expect(body.org_sessions).toBe(3);
     const wide = (await (await t.call("/insights/activity?days=28", { session })).json()) as typeof body;
     expect(wide.days).toHaveLength(28);
@@ -295,7 +297,7 @@ describe("insights activity", () => {
       org_sessions: number;
     };
     expect(body.days).toHaveLength(14);
-    expect(body.today).toEqual({ tool_calls: 0, prompts: 0, active_sessions: 0 });
+    expect(body.today).toEqual({ tool_calls: 0, prompts: 0, active_sessions: 0, tool_calls_per_prompt: null });
     expect(body.org_sessions).toBe(0);
     expect(t.events.at(-1)).toMatchObject({ event: "insights_viewed", properties: { empty: true, org_empty: true } });
     for (const bad of ["", "?days=", "?days=10", "?days=7.0", "?days=-7"]) {

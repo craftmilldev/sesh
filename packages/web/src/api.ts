@@ -282,7 +282,8 @@ export function createApp(opts: AppOptions) {
   });
 
   // Tool calls, prompts and active sessions for each of the last 7, 14 or 28 UTC days (zero-filled, oldest first),
-  // with today's three numbers. Counted by when each prompt and event happened.
+  // with today's three numbers, and tool calls per prompt (null on a day with no prompts, to two decimals).
+  // Counted by when each prompt and event happened.
   scoped.get("/insights/activity", async (c) => {
     const { user, org } = c.var;
     const raw = c.req.query("days") ?? "";
@@ -292,12 +293,20 @@ export function createApp(opts: AppOptions) {
       return fail(c, 400, "invalid_days", "days must be 7, 14 or 28.");
     }
     const db = await opts.getDb();
-    const rows = await store.dailyActivity(db, org.id, utcDay(now()).start, days);
+    const rows = (await store.dailyActivity(db, org.id, utcDay(now()).start, days)).map((r) => ({
+      ...r,
+      tool_calls_per_prompt: r.prompts > 0 ? Math.round((r.tool_calls / r.prompts) * 100) / 100 : null,
+    }));
     const [orgSessions] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`, [
       org.id,
     ]);
     const last = rows.at(-1)!;
-    const today = { tool_calls: last.tool_calls, prompts: last.prompts, active_sessions: last.active_sessions };
+    const today = {
+      tool_calls: last.tool_calls,
+      prompts: last.prompts,
+      active_sessions: last.active_sessions,
+      tool_calls_per_prompt: last.tool_calls_per_prompt,
+    };
     await metrics.capture("insights_viewed", user.id, {
       days,
       empty: rows.every((r) => !r.prompts && !r.tool_calls),
