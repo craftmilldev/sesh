@@ -842,22 +842,97 @@ button.ghost:hover:not(:disabled) {
 .chart-block {
   margin-top: 24px;
 }
+.chart-figure {
+  margin: 0;
+  max-width: 720px;
+  border-top: 1px solid var(--ink-900);
+  padding-top: 8px;
+}
+.chart-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.chart-title {
+  font: 400 20px var(--serif);
+}
+.chart-today {
+  font: 14px var(--mono);
+}
+.chart-today-label {
+  color: var(--ink-500);
+}
+.chart-wrap {
+  position: relative;
+}
 .chart {
   display: block;
   width: 100%;
-  max-width: 720px;
+  overflow: visible;
 }
 .chart-axis {
   stroke: var(--ink-900);
   stroke-width: 1;
 }
+.chart-grid {
+  stroke: var(--paper-300);
+  stroke-width: 1;
+}
+.chart-hit {
+  fill: transparent;
+}
+.chart-point {
+  outline: none;
+}
+.chart-point:focus-visible .chart-hit {
+  stroke: var(--ink-900);
+  stroke-dasharray: 3 2;
+}
 .chart-bar {
   fill: var(--ink-700);
 }
-.chart-bar.today {
+.chart-point.active .chart-bar {
+  fill: var(--ink-900);
+}
+.chart-point.today .chart-bar,
+.chart-point.today .chart-dot {
+  fill: var(--madder-600);
+}
+.chart-point.today.active .chart-bar {
+  fill: var(--madder-700);
+}
+.chart-line {
+  stroke: var(--ink-700);
+  stroke-width: 1.5;
+}
+.chart-dot {
+  fill: var(--ink-700);
+}
+.chart-value {
+  font: 700 11px var(--mono);
   fill: var(--madder-600);
 }
 .chart-tick {
-  font: 11px var(--mono);
+  font: 10px var(--mono);
   fill: var(--ink-500);
+}
+.chart-point.today .chart-tick {
+  fill: var(--madder-600);
+  font-weight: 700;
+}
+.chart-tip {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  display: flex;
+  flex-direction: column;
+  padding: 4px 8px;
+  background: var(--ink-900);
+  color: var(--paper-100);
+  font: 12px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.chart-tip-day {
+  color: var(--paper-200);
 }

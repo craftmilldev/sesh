@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../client/home.js";
+import { BarChart } from "../client/chart.js";
 import { Insights } from "../client/insights.js";
 import { Landing } from "../client/landing.js";
 import { Chrome, Page } from "../client/layout.js";
@@ -205,7 +206,7 @@ describe("signed-in pages", () => {
     expect(urls()).toEqual(["/api/insights/activity?days=14"]);
     expect([...container.querySelectorAll(".figure .num")].map((n) => n.textContent)).toEqual(["14", "2", "1"]);
     expect(container.querySelectorAll("svg.chart")).toHaveLength(3);
-    expect(container.querySelectorAll("svg.chart")[0]!.querySelectorAll("rect")).toHaveLength(14);
+    expect(container.querySelectorAll("svg.chart")[0]!.querySelectorAll(".chart-bar")).toHaveLength(14);
     expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Insights");
     const button = [...container.querySelectorAll<HTMLButtonElement>(".range-button")].find(
       (b) => b.textContent === "28 days",
@@ -213,7 +214,61 @@ describe("signed-in pages", () => {
     await act(async () => button.click());
     expect(urls()).toEqual(["/api/insights/activity?days=14", "/api/insights/activity?days=28"]);
     expect(location.search).toBe("?days=28");
-    expect(container.querySelectorAll("svg.chart")[0]!.querySelectorAll("rect")).toHaveLength(28);
+    expect(container.querySelectorAll("svg.chart")[0]!.querySelectorAll(".chart-bar")).toHaveLength(28);
+  });
+
+  it("labels every bar with its day and shows the date and value on hover and focus", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    history.replaceState(null, "", "/app/insights?days=7");
+    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+    const chart = container.querySelector("svg.chart")!;
+    const bars = [...chart.querySelectorAll<SVGGElement>(".chart-point")];
+    expect(bars.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Wed Oct 21: Tool calls: 1",
+      "Thu Oct 22: Tool calls: 2",
+      "Fri Oct 23: Tool calls: 3",
+      "Sat Oct 24: Tool calls: 4",
+      "Sun Oct 25: Tool calls: 5",
+      "Mon Oct 26: Tool calls: 6",
+      "Tue Oct 27: Tool calls: 7",
+    ]);
+    const ticks = [...chart.querySelectorAll(".chart-tick.day")].map((t) => t.textContent);
+    expect(ticks).toEqual(["W21Oct", "T22", "F23", "S24", "S25", "M26", "T27today"]);
+    expect(chart.querySelector(".chart-value")!.textContent).toBe("7");
+    expect(container.querySelector(".chart-today")!.textContent).toBe("7 today");
+    expect(container.querySelector(".chart-tip")).toBeNull();
+
+    await act(async () => bars[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(container.querySelector(".chart-tip")!.textContent).toBe("Thu Oct 22Tool calls: 2");
+    await act(async () => bars[3]!.focus());
+    expect(container.querySelector(".chart-tip")!.textContent).toBe("Sat Oct 24Tool calls: 4");
+    await act(async () => bars[3]!.blur());
+    expect(container.querySelector(".chart-tip")).toBeNull();
+    history.replaceState(null, "", "/");
+  });
+
+  it("thins the day ticks at 28 days but keeps today and the month start", async () => {
+    vi.stubGlobal("fetch", fakeApi());
+    history.replaceState(null, "", "/app/insights?days=28");
+    await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
+    const ticks = [...container.querySelector("svg.chart")!.querySelectorAll(".chart-tick.day")].map(
+      (t) => t.textContent,
+    );
+    expect(ticks).toHaveLength(15);
+    expect(ticks.at(-1)).toBe("T27today");
+    history.replaceState(null, "", "/");
+  });
+
+  it("keeps the month name on the 1st even when thinning would skip that day", async () => {
+    // Ends Nov 2, so Nov 1 is one day back: an odd offset the every-other-day thinning would skip.
+    const values = Array.from({ length: 28 }, (_, i) => ({
+      day: new Date(Date.UTC(2026, 10, 2 - (27 - i))).toISOString().slice(0, 10),
+      value: i,
+    }));
+    await act(async () => root.render(<BarChart title="Prompts" values={values} />));
+    const ticks = [...container.querySelectorAll(".chart-tick.day")].map((t) => t.textContent);
+    expect(ticks).toContain("S1Nov");
+    expect(ticks.at(-1)).toBe("M2today");
   });
 
   it("starts the insights page on the range in the URL", async () => {
@@ -221,7 +276,7 @@ describe("signed-in pages", () => {
     vi.stubGlobal("fetch", fetchMock);
     history.replaceState(null, "", "/app/insights?days=7");
     await act(async () => root.render(<Page current="insights">{() => <Insights />}</Page>));
-    expect(container.querySelectorAll("svg.chart rect")).toHaveLength(21);
+    expect(container.querySelectorAll("svg.chart .chart-bar")).toHaveLength(21);
     history.replaceState(null, "", "/");
   });
 
