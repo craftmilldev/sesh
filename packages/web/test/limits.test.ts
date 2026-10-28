@@ -314,6 +314,83 @@ describe("the team's 7 day pace", () => {
   });
 });
 
+describe("insights pace", () => {
+  const NOW = new Date("2026-10-27T15:00:00.000Z"); // Tuesday
+  const resets = new Date("2026-10-28T13:00:00Z"); // the window opened Wednesday 2026-10-21 13:00
+
+  it("gives the team's pace as it stood at the end of each day, from the readings captured by then", async () => {
+    const t = setupApp(db, () => NOW);
+    const session = await t.signIn("pace-days@example.com");
+    const me = (await (await t.call("/me", { session })).json()) as { org: { id: string } };
+    const [owner] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = 'pace-days@example.com'`);
+    const read = (pct: number, at: string, sessionId = "s") =>
+      storeLimitSnapshot(
+        db,
+        { orgId: me.org.id, userId: owner!.id },
+        {
+          sessionId,
+          fiveHourPct: null,
+          fiveHourResetsAt: null,
+          sevenDayPct: pct,
+          sevenDayResetsAt: resets,
+          capturedAt: new Date(at),
+        },
+      );
+    await read(10, "2026-10-22T18:00:00Z");
+    await read(30, "2026-10-24T18:00:00Z"); // Saturday
+    await read(50, "2026-10-26T03:00:00Z");
+    // An idle session posts a lower reading later; the window's highest reading stands.
+    await read(20, "2026-10-27T09:00:00Z", "idle");
+
+    const res = await t.call("/insights/pace?days=7", { session });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { days: { day: string; pace: number | null }[] };
+    const end = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000 - 1);
+    const pace = (used: number, asOf: Date) => Math.round((100 * used) / expectedUsed(resets, asOf));
+    expect(body.days.map((d) => d.day)).toEqual([
+      "2026-10-21",
+      "2026-10-22",
+      "2026-10-23",
+      "2026-10-24",
+      "2026-10-25",
+      "2026-10-26",
+      "2026-10-27",
+    ]);
+    expect(body.days.map((d) => d.pace)).toEqual([
+      null, // nothing reported yet
+      pace(10, end("2026-10-22")),
+      pace(10, end("2026-10-23")),
+      pace(30, end("2026-10-24")),
+      pace(30, end("2026-10-25")),
+      pace(50, end("2026-10-26")),
+      pace(50, NOW), // today: as of now
+    ]);
+    expect(body.days[1]!.pace).toBe(34);
+    // The same instant through /limits is today's value.
+    expect(body.days[6]!.pace).toBe(
+      ((await (await t.call("/limits", { session })).json()) as { seven_day_pace: number }).seven_day_pace,
+    );
+    expect(t.events.at(-2)).toMatchObject({ event: "insights_pace_viewed", properties: { days: 7, empty: false } });
+  });
+
+  it("is null all the way when nothing was reported, and rejects other ranges", async () => {
+    const t = setupApp(db, () => NOW);
+    const session = await t.signIn("pace-empty@example.com");
+    const body = (await (await t.call("/insights/pace?days=28", { session })).json()) as {
+      days: { pace: number | null }[];
+    };
+    expect(body.days).toHaveLength(28);
+    expect(body.days.every((d) => d.pace === null)).toBe(true);
+    expect(t.events.at(-1)).toMatchObject({ event: "insights_pace_viewed", properties: { days: 28, empty: true } });
+    for (const bad of ["", "?days=10"]) {
+      const res = await t.call(`/insights/pace${bad}`, { session });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("invalid_days");
+    }
+    expect(t.events.filter((e) => e.event === "insights_pace_rejected")).toHaveLength(2);
+  });
+});
+
 describe("plan usage over OTLP metrics", () => {
   async function setup(email: string) {
     const t = setupApp(db);

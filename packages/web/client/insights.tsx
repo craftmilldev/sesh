@@ -19,6 +19,10 @@ interface Activity {
   org_sessions: number;
 }
 
+interface Pace {
+  days: { day: string; pace: number | null }[];
+}
+
 const RANGES = [7, 14, 28];
 const DEFAULT_RANGE = 14;
 /** The series, in the order of the chips and the chart. `id` is what `?metrics=` calls it. */
@@ -64,11 +68,18 @@ export function Insights() {
   const [on, setOn] = useState(metricsFromUrl);
   const [weekday, setWeekday] = useState(byWeekdayFromUrl);
   const [data, setData] = useState<Activity>();
+  const [pace, setPace] = useState<Pace>();
+  const [paceError, setPaceError] = useState<string>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     setError(undefined);
     api<Activity>(`/insights/activity?days=${days}`).then(setData, (e) => setError(message(e)));
+  }, [days]);
+
+  useEffect(() => {
+    setPaceError(undefined);
+    api<Pace>(`/insights/pace?days=${days}`).then(setPace, (e) => setPaceError(message(e)));
   }, [days]);
 
   function pick(n: number) {
@@ -184,6 +195,28 @@ export function Insights() {
                 />
               ) : (
                 <MultiLineChart title="Activity" days={data.days.map((d) => d.day)} series={series} />
+              )}
+            </div>
+            <div className="chart-block">
+              {paceError ? (
+                <p className="error">{paceError}</p>
+              ) : (
+                pace && (
+                  <MultiLineChart
+                    title="Plan pace"
+                    days={pace.days.map((d) => d.day)}
+                    reference={{ value: 100, label: "100 = on pace" }}
+                    series={[
+                      {
+                        key: "pace",
+                        label: "Plan pace",
+                        axis: "left",
+                        className: "s-pace",
+                        values: pace.days.map((d) => d.pace),
+                      },
+                    ]}
+                  />
+                )
               )}
             </div>
           </section>

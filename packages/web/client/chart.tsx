@@ -188,19 +188,22 @@ export function MultiLineChart({
   series,
   title,
   names,
+  reference,
 }: {
   days: string[];
   series: Series[];
   title: string;
   /** Names the points instead of dates ("Mon".."Sun"), aligned with `days`: for averages by weekday. */
   names?: string[];
+  /** A labeled horizontal line on the left scale (100 = on pace); the axis always reaches it. */
+  reference?: { value: number; label: string };
 }) {
   const [active, setActive] = useState<number>();
   const left = series.filter((s) => s.axis === "left");
   const right = series.filter((s) => s.axis === "right");
   const maxOf = (list: Series[]) =>
     Math.max(0, ...list.flatMap((s) => s.values.filter((v): v is number => v !== null)));
-  const leftScale = niceScale(maxOf(left));
+  const leftScale = niceScale(Math.max(maxOf(left), left.length > 0 ? (reference?.value ?? 0) : 0));
   const rightScale = niceScale(maxOf(right), false);
   // The gridlines follow the left scale; with only right series on they follow the right one.
   const primary = left.length > 0 ? leftScale : rightScale;
@@ -276,6 +279,24 @@ export function MultiLineChart({
               ))}
               <text className="chart-axis-title" x={width} y={TOP - 8} textAnchor="end">
                 {right.map((s) => s.label).join(", ")}
+              </text>
+            </g>
+          )}
+          {reference && left.length > 0 && (
+            <g className="chart-reference">
+              <line
+                x1={LEFT}
+                x2={LEFT + plotW}
+                y1={TOP + (1 - reference.value / primary.top) * H}
+                y2={TOP + (1 - reference.value / primary.top) * H}
+              />
+              <text
+                className="chart-tick"
+                x={LEFT + plotW}
+                y={TOP + (1 - reference.value / primary.top) * H - 4}
+                textAnchor="end"
+              >
+                {reference.label}
               </text>
             </g>
           )}

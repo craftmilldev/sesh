@@ -17,3 +17,5 @@ seven_day_used, five_hour_reporting, seven_day_reporting, seven_day_expected, se
 instead: a `plan.usage.utilization` gauge (0 to 1) with one point per window (`plan.window` `5h` or `7d`), `plan.resets_at`
 (unix seconds) and `session.id`, sent to `POST /v1/metrics` with the same ingest token. Points sharing a session and time
 become one `sesh.limit_snapshots` row (percent = utilization x 100); other windows are ignored. JSON metrics only.
+
+`GET /api/insights/pace?days=7|14|28` gives the same pace for each of the last UTC days, as it stood at the end of that day (the computation takes an as-of time: only readings captured up to it count, each member's highest reading per window), `null` where nothing was expected; today's value is as of now. `GET /api/limits` is the same computation as of now.

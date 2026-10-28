@@ -324,6 +324,7 @@ const WEEK_MS = 7 * DAY_MS;
  * latest snapshot can be stale; usage only rises until the window resets, so a window's usage is its highest
  * reading. A window that has already reset (its resets_at is past) counts as unknown. A 7 day window resets at
  * the same time each week, so a past reset is rolled forward by whole weeks to give the current window's end.
+ * `now` is "as of": only readings captured up to then count.
  */
 export async function currentLimits(db: Db, orgId: string, now = new Date()): Promise<UserLimits[]> {
   const rows = await db.query<{
@@ -341,7 +342,7 @@ export async function currentLimits(db: Db, orgId: string, now = new Date()): Pr
      FROM sesh.users u
      JOIN sesh.org_members m ON m.org_id = $1 AND m.user_id = u.id AND m.counts_toward_team
      JOIN sesh.limit_snapshots l ON l.user_id = u.id
-     WHERE l.org_id = $1 AND l.captured_at > $2::timestamptz - interval '28 days'
+     WHERE l.org_id = $1 AND l.captured_at <= $2 AND l.captured_at > $2::timestamptz - interval '28 days'
      GROUP BY u.id, u.name
      ORDER BY u.name, u.id`,
     [orgId, now],
@@ -455,6 +456,24 @@ export async function planPool(db: Db, orgId: string, now = new Date()): Promise
     seven_day_reporting: seven.length,
     ...poolPace(windows, members, now),
   };
+}
+
+/**
+ * The team's 7 day pace as it stood at the end of each of `days` UTC days ending with the one that starts at
+ * `lastStart` (oldest first): the last millisecond of the day, or `now` for the last day. Each day is planPool as of
+ * then, so only readings captured by that moment count. Null where nothing is expected.
+ */
+export async function planPace(db: Db, orgId: string, lastStart: Date, days: number, now: Date) {
+  const rows: { day: string; seven_day_pace: number | null }[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const start = new Date(lastStart.getTime() - i * DAY_MS);
+    const asOf = i === 0 ? now : new Date(start.getTime() + DAY_MS - 1);
+    rows.push({
+      day: start.toISOString().slice(0, 10),
+      seven_day_pace: (await planPool(db, orgId, asOf)).seven_day_pace,
+    });
+  }
+  return rows;
 }
 
 export const SESSIONS_PAGE_SIZE = 25;

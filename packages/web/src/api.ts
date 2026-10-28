@@ -246,7 +246,7 @@ export function createApp(opts: AppOptions) {
   // The team's plan windows as one pool (see store.poolUsed). Names no one.
   scoped.get("/limits", async (c) => {
     const { user, org } = c.var;
-    const pool = await store.planPool(await opts.getDb(), org.id);
+    const pool = await store.planPool(await opts.getDb(), org.id, now());
     await metrics.capture("limits_viewed", user.id, { empty: !pool.five_hour_reporting && !pool.seven_day_reporting });
     return c.json(pool);
   });
@@ -330,6 +330,23 @@ export function createApp(opts: AppOptions) {
       org_empty: Number(orgSessions!.n) === 0,
     });
     return c.json({ days: rows, by_dow, today, org_sessions: Number(orgSessions!.n) });
+  });
+
+  // The team's 7 day pace (see store.poolPace) at the end of each of the last 7, 14 or 28 UTC days, oldest first;
+  // null on a day where nothing was expected. Names no one.
+  scoped.get("/insights/pace", async (c) => {
+    const { user, org } = c.var;
+    const raw = c.req.query("days") ?? "";
+    if (!["7", "14", "28"].includes(raw)) {
+      await metrics.capture("insights_pace_rejected", user.id, { reason: "invalid_days" });
+      return fail(c, 400, "invalid_days", "days must be 7, 14 or 28.");
+    }
+    const days = await store.planPace(await opts.getDb(), org.id, utcDay(now()).start, Number(raw), now());
+    await metrics.capture("insights_pace_viewed", user.id, {
+      days: Number(raw),
+      empty: days.every((d) => d.seven_day_pace === null),
+    });
+    return c.json({ days: days.map((d) => ({ day: d.day, pace: d.seven_day_pace })) });
   });
 
   // The org's members, by name and role, with `you` on the signed-in user's row.

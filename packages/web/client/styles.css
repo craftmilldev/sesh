@@ -896,6 +896,20 @@ button.ghost:hover:not(:disabled) {
 .s-ratio .chart-dot {
   fill: var(--madder-500);
 }
+.s-pace .chart-line {
+  stroke: var(--ink-900);
+}
+.s-pace .chart-dot {
+  fill: var(--ink-900);
+}
+.chart-reference line {
+  stroke: var(--madder-600);
+  stroke-width: 1;
+  stroke-dasharray: 6 3;
+}
+.chart-reference text {
+  fill: var(--madder-600);
+}
 .chart-guide {
   stroke: var(--ink-500);
   stroke-width: 1;
@@ -908,6 +922,7 @@ button.ghost:hover:not(:disabled) {
 .chart-tip-value.s-prompts,
 .chart-tip-value.s-tools,
 .chart-tip-value.s-sessions,
+.chart-tip-value.s-pace,
 .chart-tip-value.s-ratio {
   color: var(--paper-100);
 }

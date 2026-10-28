@@ -46,6 +46,16 @@ function insights(days: number, sessions: number) {
   return { days: rows, by_dow, today, org_sessions: sessions };
 }
 
+/** The pace endpoint's answer: no pace on the first day, then 80, 90, 100... */
+function paceDays(days: number) {
+  return {
+    days: Array.from({ length: days }, (_, i) => ({
+      day: new Date(Date.UTC(2026, 9, 27 - (days - 1 - i))).toISOString().slice(0, 10),
+      pace: i === 0 ? null : 70 + i * 10,
+    })),
+  };
+}
+
 /** A fake API where /me reports whichever org the last switch chose. */
 function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
   let active = opts.observer ? { ...orgs[0]!, counts_toward_team: false } : orgs[0]!;
@@ -67,49 +77,51 @@ function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
     const body =
       path === "/me"
         ? { user: { name: "Ada" }, org: active, orgs, ingest_endpoint: "https://sesh.test" }
-        : path === "/insights/activity"
-          ? insights(Number(new URLSearchParams(url.split("?")[1]).get("days")), sessions)
-          : path === "/today"
-            ? {
-                sessions,
-                org_sessions: sessions,
-                tokens: 51_700_000,
-                cache_read_tokens: 50_500_000,
-                prompts: 40,
-                tool_calls: 200,
-                top: sessions
-                  ? [
-                      {
-                        id: "s1",
-                        started_at: "2026-10-22T14:00:00.000Z",
-                        tokens: 30_000_000,
-                        cache_read_tokens: 29_000_000,
-                        prompts: 9,
-                        tool_calls: 50,
-                      },
-                    ]
-                  : [],
-              }
-            : path === "/limits"
+        : path === "/insights/pace"
+          ? paceDays(Number(new URLSearchParams(url.split("?")[1]).get("days")))
+          : path === "/insights/activity"
+            ? insights(Number(new URLSearchParams(url.split("?")[1]).get("days")), sessions)
+            : path === "/today"
               ? {
-                  members: 4,
-                  five_hour_used: 19,
-                  seven_day_used: 90,
-                  five_hour_reporting: 2,
-                  seven_day_reporting: 3,
+                  sessions,
+                  org_sessions: sessions,
+                  tokens: 51_700_000,
+                  cache_read_tokens: 50_500_000,
+                  prompts: 40,
+                  tool_calls: 200,
+                  top: sessions
+                    ? [
+                        {
+                          id: "s1",
+                          started_at: "2026-10-22T14:00:00.000Z",
+                          tokens: 30_000_000,
+                          cache_read_tokens: 29_000_000,
+                          prompts: 9,
+                          tool_calls: 50,
+                        },
+                      ]
+                    : [],
                 }
-              : path === "/members"
+              : path === "/limits"
                 ? {
-                    members: [
-                      { name: "Ada", role: "owner", counts_toward_team: true, you: true },
-                      { name: "Sam", role: "member", counts_toward_team: false, you: false },
-                    ],
+                    members: 4,
+                    five_hour_used: 19,
+                    seven_day_used: 90,
+                    five_hour_reporting: 2,
+                    seven_day_reporting: 3,
                   }
-                : path === "/tokens" && init?.method === "POST"
-                  ? { token: "sesh_fresh" }
-                  : path === "/tokens"
-                    ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
-                    : {};
+                : path === "/members"
+                  ? {
+                      members: [
+                        { name: "Ada", role: "owner", counts_toward_team: true, you: true },
+                        { name: "Sam", role: "member", counts_toward_team: false, you: false },
+                      ],
+                    }
+                  : path === "/tokens" && init?.method === "POST"
+                    ? { token: "sesh_fresh" }
+                    : path === "/tokens"
+                      ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
+                      : {};
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   });
 }
@@ -218,17 +230,18 @@ describe("signed-in pages", () => {
     chips()
       .filter((c) => c.getAttribute("aria-pressed") === "true")
       .map((c) => c.textContent);
-  const lines = () => [...container.querySelectorAll<SVGGElement>(".chart-series")].map((g) => g.dataset.series);
+  const lines = () =>
+    [...container.querySelectorAll<SVGGElement>(".chart-series:not([data-series=pace])")].map((g) => g.dataset.series);
 
   it("draws today's numbers and one line chart, and refetches when the range changes", async () => {
     const fetchMock = fakeApi();
     vi.stubGlobal("fetch", fetchMock);
     history.replaceState(null, "", "/app/insights");
     await open();
-    const urls = () => fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights"));
+    const urls = () => fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights/activity"));
     expect(urls()).toEqual(["/api/insights/activity?days=14"]);
     expect([...container.querySelectorAll(".figure .num")].map((n) => n.textContent)).toEqual(["2", "14", "1", "7"]);
-    expect(container.querySelectorAll("svg.chart")).toHaveLength(1);
+    expect(container.querySelectorAll("svg.chart")).toHaveLength(2); // activity and plan pace
     expect(lines()).toEqual(["prompts", "tools", "sessions"]);
     expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(14);
     expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Insights");
@@ -356,7 +369,9 @@ describe("signed-in pages", () => {
       value: i,
     }));
     await act(async () => root.render(<BarChart title="Prompts" values={values} />));
-    const ticks = [...container.querySelectorAll(".chart-tick.day")].map((t) => t.textContent);
+    const ticks = [...container.querySelector("svg.chart")!.querySelectorAll(".chart-tick.day")].map(
+      (t) => t.textContent,
+    );
     expect(ticks).toContain("S1Nov");
     expect(ticks.at(-1)).toBe("M2today");
   });
@@ -375,17 +390,11 @@ describe("signed-in pages", () => {
     expect(location.search).toBe("?by=weekday");
     expect(view("By weekday").getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(7);
-    expect([...container.querySelectorAll(".chart-tick.day")].map((t) => t.textContent)).toEqual([
-      "Mon",
-      "Tue",
-      "Wed",
-      "Thu",
-      "Fri",
-      "Sat",
-      "Sun",
-    ]);
-    expect(container.querySelector(".chart-point.today")).toBeNull();
-    expect(container.querySelector(".chart-point")!.getAttribute("aria-label")).toBe(
+    expect(
+      [...container.querySelector("svg.chart")!.querySelectorAll(".chart-tick.day")].map((t) => t.textContent),
+    ).toEqual(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]);
+    expect(container.querySelector("svg.chart")!.querySelector(".chart-point.today")).toBeNull();
+    expect(container.querySelector("svg.chart")!.querySelector(".chart-point")!.getAttribute("aria-label")).toBe(
       "Mon: Prompts: 2, Tool calls: 1, Active sessions: 1",
     );
     await act(async () => view("By day").click());
@@ -396,6 +405,34 @@ describe("signed-in pages", () => {
     root = createRoot(container);
     await open();
     expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(7);
+    history.replaceState(null, "", "/");
+  });
+
+  it("draws the plan pace as a line with a 100 = on pace reference, a gap for a day with none, and follows the range", async () => {
+    const fetchMock = fakeApi();
+    vi.stubGlobal("fetch", fetchMock);
+    history.replaceState(null, "", "/app/insights?days=7");
+    await open();
+    const chart = () => container.querySelectorAll<SVGSVGElement>("svg.chart")[1]!;
+    expect(chart().closest("figure")!.querySelector(".chart-title")!.textContent).toBe("Plan pace");
+    expect(chart().querySelector(".chart-reference text")!.textContent).toBe("100 = on pace");
+    expect(chart().querySelectorAll(".chart-reference line")).toHaveLength(1);
+    expect(chart().querySelectorAll('[data-series="pace"] .chart-dot')).toHaveLength(6); // the first day is a gap
+    expect(chart().querySelectorAll('[data-series="pace"] polyline')).toHaveLength(1);
+    const points = [...chart().querySelectorAll(".chart-point")];
+    expect(points[0]!.getAttribute("aria-label")).toBe("Wed Oct 21: Plan pace: –");
+    expect(points[6]!.getAttribute("aria-label")).toBe("Tue Oct 27: Plan pace: 130");
+    // The axis reaches past the reference line even when every day is under it.
+    expect([...chart().querySelectorAll(".chart-grid + .chart-tick")].map((t) => t.textContent)).toContain("100");
+    const button = [...container.querySelectorAll<HTMLButtonElement>(".range-button")].find(
+      (b) => b.textContent === "28 days",
+    )!;
+    await act(async () => button.click());
+    expect(fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights/pace"))).toEqual([
+      "/api/insights/pace?days=7",
+      "/api/insights/pace?days=28",
+    ]);
+    expect(chart().querySelectorAll('[data-series="pace"] .chart-dot')).toHaveLength(27);
     history.replaceState(null, "", "/");
   });
 
