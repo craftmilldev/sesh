@@ -4,6 +4,7 @@
 // sesh.mjs at ~/.sesh/sesh.mjs, and an installed copy keeps itself current from the repo's releases.
 //
 //   sesh status              what is set up: server, token, status line, last reading, updates
+//   sesh sessions            list the Claude Code sessions on this machine (reads local files only)
 //   sesh setup               save the server and token, and make sesh Claude Code's status line
 //   sesh statusline [on|off] with no argument: the status line itself (what Claude Code runs); on/off: manage it
 //   sesh config [set k v]    show the settings, or change url, token or auto_update
@@ -18,6 +19,7 @@ import {
   chmodSync,
   createReadStream,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -26,7 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
@@ -509,6 +511,122 @@ async function statusCommand() {
   if (latest) line("newest", newerThanThis(latest) ? `${latest.version} (run \`sesh update\`)` : "this is it");
 }
 
+// Claude Code keeps each session's transcript as JSONL under <config dir>/projects/<project>/<session>.jsonl. Reading
+// them stays in this file because the release ships sesh.mjs alone; the upload command reuses these functions.
+
+const claudeDir = (env = process.env) => env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+
+/** Every .jsonl file under `dir`, at any depth; unreadable directories count as empty. */
+function findTranscripts(dir) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.flatMap((e) => {
+    const path = join(dir, e.name);
+    if (e.isDirectory()) return findTranscripts(path);
+    return e.isFile() && e.name.endsWith(".jsonl") ? [path] : [];
+  });
+}
+
+/** Whether a transcript entry is a prompt the person typed: not a tool result, a meta message or a subagent's turn. */
+function isPrompt(entry) {
+  if (entry.type !== "user" || entry.isMeta || entry.isSidechain) return false;
+  const content = entry.message?.content;
+  if (typeof content === "string") return content.trim() !== "";
+  return Array.isArray(content) && content.some((c) => c?.type === "text" && String(c.text ?? "").trim() !== "");
+}
+
+const count = (n) => (Number.isFinite(n) ? n : 0);
+
+/**
+ * What one transcript says about its session: `{ id, started_at, project, prompts, tokens }`, or null when it has no
+ * entries. Bad lines are skipped. Tokens are input, output and cache tokens of each assistant message, counted once
+ * (Claude Code writes a message once per content block). Prompt text is counted, never kept.
+ */
+export function parseTranscript(text, fallbackId = null) {
+  let id = null;
+  let started = null;
+  let project = null;
+  let prompts = 0;
+  let entries = 0;
+  const usage = new Map();
+  for (const raw of text.split("\n")) {
+    let entry;
+    try {
+      entry = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!entry || typeof entry.type !== "string") continue;
+    entries++;
+    if (!id && typeof entry.sessionId === "string") id = entry.sessionId;
+    if (!project && typeof entry.cwd === "string") project = entry.cwd;
+    const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+    if (!Number.isNaN(at) && (started === null || at < started)) started = at;
+    if (isPrompt(entry)) prompts++;
+    const u = entry.type === "assistant" ? entry.message?.usage : null;
+    if (u && typeof u === "object") {
+      const total =
+        count(u.input_tokens) +
+        count(u.output_tokens) +
+        count(u.cache_creation_input_tokens) +
+        count(u.cache_read_input_tokens);
+      usage.set(entry.message.id ?? `line-${usage.size}`, total);
+    }
+  }
+  if (!entries) return null;
+  const tokens = [...usage.values()].reduce((a, b) => a + b, 0);
+  return {
+    id: id ?? fallbackId,
+    started_at: started === null ? null : new Date(started).toISOString(),
+    project,
+    prompts,
+    tokens,
+  };
+}
+
+/** The sessions in Claude Code's transcripts, newest first. Skips files that are empty, unreadable or not transcripts. */
+export function scanSessions(env = process.env) {
+  const root = join(claudeDir(env), "projects");
+  const sessions = new Map();
+  for (const file of findTranscripts(root)) {
+    let text;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const base = basename(file, ".jsonl");
+    const found = parseTranscript(text, base);
+    if (!found?.id) continue;
+    // Subagent transcripts carry their parent's session id: they add to that session.
+    const known = sessions.get(found.id);
+    if (!known) {
+      // The project directory's name stands in for a transcript with no cwd.
+      sessions.set(found.id, { ...found, project: found.project ?? basename(dirname(file)) });
+      continue;
+    }
+    known.prompts += found.prompts;
+    known.tokens += found.tokens;
+    if (found.started_at && (!known.started_at || found.started_at < known.started_at))
+      known.started_at = found.started_at;
+  }
+  return [...sessions.values()].sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""));
+}
+
+function sessionsCommand() {
+  const sessions = scanSessions();
+  if (!sessions.length) return void console.log(`No Claude Code sessions found in ${join(claudeDir(), "projects")}.`);
+  for (const s of sessions) {
+    const date = s.started_at ? s.started_at.slice(0, 10) : "unknown";
+    const prompts = `${s.prompts} ${s.prompts === 1 ? "prompt" : "prompts"}`;
+    console.log([s.id, date, s.project, prompts, `${s.tokens} tokens`].join("  "));
+  }
+}
+
 /** Flags of the form `--name value` and `--name`, and the plain words. */
 function parseArgs(args) {
   const flags = {};
@@ -571,6 +689,7 @@ function configCommand(args) {
 const HELP = `sesh ${VERSION}: session insights for Claude Code teams
 
   sesh status              what is set up: server, token, status line, last reading, updates
+  sesh sessions            list the Claude Code sessions on this machine (local files only, no network)
   sesh setup [--replace]   save the server and token (from the OTel settings, or --url and --token) and make sesh
                            Claude Code's status line
   sesh statusline on|off   make sesh Claude Code's status line, or remove it
@@ -586,9 +705,11 @@ export async function main(argv) {
   if (command === "--help" || command === "-h" || command === "help" || !command) return void console.log(HELP);
   if (command === "statusline" && !rest[0]) return runStatusline();
   if (command === "statusline" && rest[0] === "--background") return runBackground();
-  // Changing the settings is how updates get turned off, so it never waits on one.
-  if (command !== "config") await updateBeforeCommand(argv);
+  // Changing the settings is how updates get turned off, so it never waits on one;
+  // sessions reads local files only, so it never touches the network.
+  if (command !== "config" && command !== "sessions") await updateBeforeCommand(argv);
   if (command === "status") return statusCommand();
+  if (command === "sessions") return sessionsCommand();
   if (command === "setup") return setupCommand(rest);
   if (command === "update") return updateCommand();
   if (command === "config") return configCommand(rest);

@@ -10,9 +10,11 @@ import {
   isNewer,
   isSeshCommand,
   parseInput,
+  parseTranscript,
   readConfig,
   releaseVersion,
   reportable,
+  scanSessions,
   serverOrigin,
   target,
   updatesEnabled,
@@ -302,5 +304,116 @@ describe("status line script", () => {
     expect(readConfig(file)).toBeNull();
     writeFileSync(file, "{");
     expect(readConfig(file)).toBeNull();
+  });
+});
+
+describe("sessions", () => {
+  const line = (o: object) => JSON.stringify(o);
+  const usage = (n: number) => ({
+    input_tokens: n,
+    output_tokens: n,
+    cache_creation_input_tokens: 1,
+    cache_read_input_tokens: 2,
+  });
+  const SECRET = "my secret prompt text";
+
+  const first = [
+    line({
+      type: "user",
+      sessionId: "s-one",
+      cwd: "/work/app",
+      timestamp: "2026-10-01T10:00:00Z",
+      message: { content: SECRET },
+    }),
+    line({
+      type: "assistant",
+      sessionId: "s-one",
+      timestamp: "2026-10-01T10:00:05Z",
+      message: { id: "m1", usage: usage(10) },
+    }),
+    // The same message again, once per content block: counted once.
+    line({
+      type: "assistant",
+      sessionId: "s-one",
+      timestamp: "2026-10-01T10:00:06Z",
+      message: { id: "m1", usage: usage(10) },
+    }),
+    line({
+      type: "user",
+      sessionId: "s-one",
+      timestamp: "2026-10-01T10:01:00Z",
+      message: { content: [{ type: "tool_result", content: "x" }] },
+    }),
+    line({ type: "user", sessionId: "s-one", isMeta: true, message: { content: "meta" } }),
+    "{not json",
+    line({
+      type: "user",
+      sessionId: "s-one",
+      timestamp: "2026-10-01T10:02:00Z",
+      message: { content: [{ type: "text", text: SECRET }] },
+    }),
+  ].join("\n");
+  const second = [
+    line({
+      type: "user",
+      sessionId: "s-two",
+      cwd: "/work/other",
+      timestamp: "2026-10-03T09:00:00Z",
+      message: { content: "hi" },
+    }),
+    line({ type: "assistant", sessionId: "s-two", message: { id: "m9", usage: usage(1) } }),
+  ].join("\n");
+
+  function claude() {
+    const h = home();
+    const projects = join(h.root, ".claude", "projects");
+    mkdirSync(join(projects, "-work-app"), { recursive: true });
+    mkdirSync(join(projects, "-work-other"), { recursive: true });
+    writeFileSync(join(projects, "-work-app", "s-one.jsonl"), first);
+    writeFileSync(join(projects, "-work-other", "s-two.jsonl"), second);
+    writeFileSync(join(projects, "-work-app", "empty.jsonl"), "");
+    writeFileSync(join(projects, "-work-app", "junk.jsonl"), "garbage\n\u0000\u0001\n[]\n");
+    return { h, projects };
+  }
+
+  it("parses a transcript: prompts, de-duplicated tokens, start", () => {
+    expect(parseTranscript(first)).toEqual({
+      id: "s-one",
+      started_at: "2026-10-01T10:00:00.000Z",
+      project: "/work/app",
+      prompts: 2,
+      tokens: 10 + 10 + 1 + 2,
+    });
+    expect(parseTranscript("")).toBeNull();
+    expect(parseTranscript("nope\n")).toBeNull();
+  });
+
+  it("lists sessions newest first, without prompt text, skipping empty and broken files", async () => {
+    const { h } = claude();
+    const out = await h.sesh("sessions");
+    expect(out.code).toBe(0);
+    expect(out.stdout.trim().split("\n")).toEqual([
+      "s-two  2026-10-03  /work/other  1 prompt  5 tokens",
+      "s-one  2026-10-01  /work/app  2 prompts  23 tokens",
+    ]);
+    expect(out.stdout).not.toContain(SECRET);
+  });
+
+  it("adds a subagent's transcript to its parent session", () => {
+    const { h, projects } = claude();
+    mkdirSync(join(projects, "-work-app", "s-one", "subagents"), { recursive: true });
+    writeFileSync(
+      join(projects, "-work-app", "s-one", "subagents", "agent-a.jsonl"),
+      line({ type: "assistant", sessionId: "s-one", isSidechain: true, message: { id: "sub", usage: usage(100) } }),
+    );
+    const found = scanSessions(h.env).find((s) => s.id === "s-one");
+    expect(found).toMatchObject({ prompts: 2, tokens: 23 + 203 });
+  });
+
+  it("says so when there are no sessions, and never touches the network", async () => {
+    const h = home({ SESH_URL: "http://127.0.0.1:1", SESH_TOKEN: "t" });
+    const out = await h.sesh("sessions");
+    expect(out.code).toBe(0);
+    expect(out.stdout).toContain("No Claude Code sessions found");
   });
 });
