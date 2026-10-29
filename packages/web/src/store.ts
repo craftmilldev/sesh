@@ -746,3 +746,67 @@ export async function dailyActivity(db: Db, orgId: string, lastStart: Date, days
     active_sessions: Number(r.active_sessions),
   }));
 }
+
+export interface GanttSession {
+  id: string;
+  started_at: Date;
+  ended_at: Date;
+  duration_seconds: number;
+  /** Whole-session totals, not just the part in the range. */
+  tokens: number;
+  prompts: number;
+  tool_calls: number;
+}
+
+/**
+ * The sessions with any prompt or event in the `days` UTC days ending with the day that starts at `lastStart`, longest
+ * first (real start to real end, whatever the range), at most `limit` of them, and how many there are in all.
+ */
+export async function ganttSessions(
+  db: Db,
+  orgId: string,
+  lastStart: Date,
+  days: number,
+  limit: number,
+): Promise<{ sessions: GanttSession[]; total: number }> {
+  const first = new Date(lastStart.getTime() - (days - 1) * DAY_MS);
+  const end = new Date(lastStart.getTime() + DAY_MS);
+  const where = `WHERE s.org_id = $1 AND (
+       EXISTS (SELECT 1 FROM sesh.events WHERE session_id = s.id AND occurred_at >= $2 AND occurred_at < $3)
+       OR EXISTS (SELECT 1 FROM sesh.prompts WHERE session_id = s.id AND started_at >= $2 AND started_at < $3))`;
+  const [t] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions s ${where}`, [orgId, first, end]);
+  const rows = await db.query<{
+    id: string;
+    started_at: Date;
+    ended_at: Date;
+    tokens: string;
+    prompts: string;
+    tool_calls: string;
+  }>(
+    `SELECT s.id, s.started_at, s.ended_at,
+            COALESCE(e.tokens, 0) AS tokens, COALESCE(e.tool_calls, 0) AS tool_calls,
+            (SELECT count(*) FROM sesh.prompts p WHERE p.session_id = s.id) AS prompts
+     FROM sesh.sessions s
+     LEFT JOIN LATERAL (
+       SELECT sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)) AS tokens,
+              count(*) FILTER (WHERE kind = 'tool_call') AS tool_calls
+       FROM sesh.events WHERE session_id = s.id
+     ) e ON true
+     ${where}
+     ORDER BY s.ended_at - s.started_at DESC, s.started_at DESC, s.id DESC
+     LIMIT $4`,
+    [orgId, first, end, limit],
+  );
+  return {
+    sessions: rows.map((r) => ({
+      id: r.id,
+      started_at: new Date(r.started_at),
+      ended_at: new Date(r.ended_at),
+      duration_seconds: Math.round((new Date(r.ended_at).getTime() - new Date(r.started_at).getTime()) / 1000),
+      tokens: Number(r.tokens),
+      prompts: Number(r.prompts),
+      tool_calls: Number(r.tool_calls),
+    })),
+    total: Number(t!.n),
+  };
+}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { BarChart, MultiLineChart, type Series } from "./chart.js";
+import { GanttChart, type GanttData } from "./gantt.js";
 import { num } from "./fmt.js";
 import { message } from "./layout.js";
 import { api } from "./session.js";
@@ -76,7 +77,14 @@ export function Insights() {
   const [paceError, setPaceError] = useState<string>();
   const [hits, setHits] = useState<LimitHits>();
   const [hitsError, setHitsError] = useState<string>();
+  const [gantt, setGantt] = useState<GanttData>();
+  const [ganttError, setGanttError] = useState<string>();
   const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    setGanttError(undefined);
+    api<GanttData>(`/insights/gantt?days=${days}`).then(setGantt, (e) => setGanttError(message(e)));
+  }, [days]);
 
   useEffect(() => {
     setHitsError(undefined);
@@ -240,6 +248,13 @@ export function Insights() {
                     values={hits.days.map((d) => ({ day: d.day, value: d.members }))}
                   />
                 )
+              )}
+            </div>
+            <div className="chart-block">
+              {ganttError ? (
+                <p className="error">{ganttError}</p>
+              ) : (
+                gantt && <GanttChart title="Sessions" data={gantt} />
               )}
             </div>
           </section>
