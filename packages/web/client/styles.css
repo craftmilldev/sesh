@@ -1027,11 +1027,6 @@ button.ghost:hover:not(:disabled) {
   max-height: 420px;
   overflow: auto;
 }
-.gantt-caption {
-  font: 12px var(--mono);
-  color: var(--ink-500);
-  margin: 4px 0;
-}
 .gantt-bar {
   fill: var(--ink-700);
 }
