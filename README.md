@@ -1,7 +1,7 @@
 # Sesh
 
 Session insights for Claude Code teams. Sesh collects your team's Claude Code sessions through OpenTelemetry and shows
-the shape of the work: tokens, tool calls, prompts, and how much of the team's plan is used. It never shows who did it.
+the shape of the work: tokens, tool calls, prompts, which sessions run longest and overlap, and how much of the team's plan is used. It never shows who did it.
 
 It's for teams that share Claude Code plans and want to know where the usage goes, without reading anyone's prompts.
 Prompt text and user identity are dropped before anything is stored.

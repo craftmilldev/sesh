@@ -343,3 +343,111 @@ describe("utcDay", () => {
     expect(parseUtcDay("2026-13-01")).toBeUndefined();
   });
 });
+
+describe("GET /api/insights/gantt", () => {
+  const NOW = new Date("2026-10-27T15:00:00.000Z");
+  interface Gantt {
+    from: string;
+    to: string;
+    total: number;
+    sessions: {
+      id: string;
+      started_at: string;
+      ended_at: string;
+      duration_seconds: number;
+      prompts: number;
+      ongoing: boolean;
+    }[];
+  }
+
+  async function org(t: ReturnType<typeof setupApp>, email: string) {
+    const session = await t.signIn(email);
+    const [user] = await db.query<{ id: string }>(`SELECT id FROM sesh.users WHERE email = $1`, [email]);
+    const me = (await (await t.call("/me", { session })).json()) as { org: { id: string } };
+    return { session, userId: user!.id, orgId: me.org.id };
+  }
+  /** A session from `start` to `end`, with a prompt at each of `promptAts` (the activity that puts it in a range). */
+  async function addSession(o: { orgId: string; userId: string }, start: string, end: string, promptAts: string[]) {
+    const id = uuidv7();
+    await db.query(
+      `INSERT INTO sesh.sessions (id, org_id, user_id, agent, external_id, started_at, ended_at)
+       VALUES ($1, $2, $3, 'claude-code', $6, $4, $5)`,
+      [id, o.orgId, o.userId, start, end, id],
+    );
+    for (const at of promptAts)
+      await db.query(`INSERT INTO sesh.prompts (id, session_id, external_id, started_at) VALUES ($1, $2, $4, $3)`, [
+        uuidv7(),
+        id,
+        at,
+        uuidv7(),
+      ]);
+    return id;
+  }
+
+  it("lists the sessions active in the range, longest first, with the real times and the range to clip to", async () => {
+    const t = setupApp(db, () => NOW);
+    const o = await org(t, "gantt@example.com");
+    const short = await addSession(o, "2026-10-26T10:00:00Z", "2026-10-26T10:30:00Z", ["2026-10-26T10:00:00Z"]);
+    // Began before the 7 day range (Oct 21..27) and ran into it: the real start and duration are reported.
+    const spanning = await addSession(o, "2026-10-19T12:00:00Z", "2026-10-22T12:00:00Z", ["2026-10-21T12:00:00Z"]);
+    const live = await addSession(o, "2026-10-27T13:00:00Z", "2026-10-27T14:58:00Z", ["2026-10-27T14:58:00Z"]);
+    // Out of range entirely: its only activity is before Oct 21.
+    await addSession(o, "2026-10-10T10:00:00Z", "2026-10-10T20:00:00Z", ["2026-10-10T10:00:00Z"]);
+    // Another org's session never shows.
+    const other = await org(t, "gantt-other@example.com");
+    await addSession(other, "2026-10-26T00:00:00Z", "2026-10-26T23:00:00Z", ["2026-10-26T01:00:00Z"]);
+
+    const res = await t.call("/insights/gantt?days=7", { session: o.session });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Gantt;
+    expect(body.from).toBe("2026-10-21T00:00:00.000Z");
+    expect(body.to).toBe("2026-10-28T00:00:00.000Z");
+    expect(body.total).toBe(3);
+    expect(body.sessions.map((s) => s.id)).toEqual([spanning, live, short]);
+    expect(body.sessions[0]).toMatchObject({
+      started_at: "2026-10-19T12:00:00.000Z",
+      ended_at: "2026-10-22T12:00:00.000Z",
+      duration_seconds: 3 * 86400,
+      prompts: 1,
+      ongoing: false,
+    });
+    expect(body.sessions.map((s) => s.ongoing)).toEqual([false, true, false]);
+    expect(t.events.at(-1)).toMatchObject({
+      event: "insights_gantt_viewed",
+      properties: { days: 7, empty: false, capped: false },
+    });
+
+    // The wider range picks up the older session too.
+    const wide = (await (await t.call("/insights/gantt?days=28", { session: o.session })).json()) as Gantt;
+    expect(wide.total).toBe(4);
+    expect(wide.sessions[0]!.duration_seconds).toBe(3 * 86400);
+  });
+
+  it("caps at the 100 longest and reports the total", async () => {
+    const t = setupApp(db, () => NOW);
+    const o = await org(t, "gantt-cap@example.com");
+    for (let i = 0; i < 102; i++) {
+      // Session i lasts i + 1 minutes.
+      await addSession(o, "2026-10-27T01:00:00Z", new Date(Date.UTC(2026, 9, 27, 1, i + 1)).toISOString(), [
+        "2026-10-27T01:00:00Z",
+      ]);
+    }
+    const body = (await (await t.call("/insights/gantt?days=7", { session: o.session })).json()) as Gantt;
+    expect(body.total).toBe(102);
+    expect(body.sessions).toHaveLength(100);
+    expect(body.sessions[0]!.duration_seconds).toBe(102 * 60);
+    expect(body.sessions.at(-1)!.duration_seconds).toBe(3 * 60);
+    expect(t.events.at(-1)).toMatchObject({ properties: { capped: true } });
+  });
+
+  it("is empty with no sessions, and rejects other ranges", async () => {
+    const t = setupApp(db, () => NOW);
+    const o = await org(t, "gantt-empty@example.com");
+    const body = (await (await t.call("/insights/gantt?days=14", { session: o.session })).json()) as Gantt;
+    expect(body).toMatchObject({ total: 0, sessions: [] });
+    expect(t.events.at(-1)).toMatchObject({ event: "insights_gantt_viewed", properties: { days: 14, empty: true } });
+    for (const bad of ["", "?days=10"])
+      expect((await t.call(`/insights/gantt${bad}`, { session: o.session })).status).toBe(400);
+    expect(t.events.filter((e) => e.event === "insights_gantt_rejected")).toHaveLength(2);
+  });
+});
