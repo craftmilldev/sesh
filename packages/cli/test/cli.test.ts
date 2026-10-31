@@ -680,6 +680,41 @@ describe("upload", () => {
     expect(readSessionEntries("s-up", h.env, [])).toEqual([]);
   });
 
+  it("reads each transcript at most twice in a bulk run, however many sessions there are", async () => {
+    const h = setup();
+    const dir = join(h.root, ".claude", "projects", "-work-app");
+    for (let i = 0; i < 30; i++) {
+      const line = JSON.stringify({
+        type: "user",
+        sessionId: `s-${i}`,
+        cwd: "/work/app",
+        timestamp: "2026-10-02T10:00:00.000Z",
+        message: { content: `prompt ${i}` },
+      });
+      writeFileSync(join(dir, `s-${i}.jsonl`), line);
+    }
+    // Counts the transcript reads in the run by wrapping fs.readFileSync before sesh loads.
+    const log = join(h.root, "reads.log");
+    const preload = join(h.root, "count-reads.cjs");
+    writeFileSync(
+      preload,
+      `const fs = require("node:fs");
+const read = fs.readFileSync;
+fs.readFileSync = (f, ...a) => {
+  if (String(f).endsWith(".jsonl")) fs.appendFileSync(${JSON.stringify(log)}, f + "\\n");
+  return read(f, ...a);
+};`,
+    );
+    await run(process.execPath, ["--require", preload, join(h.state, "sesh.mjs"), "upload", "--all", "--dry-run"], {
+      env: h.env,
+    });
+    const reads = new Map<string, number>();
+    for (const f of readFileSync(log, "utf8").split("\n").filter(Boolean)) reads.set(f, (reads.get(f) ?? 0) + 1);
+    expect(reads.size).toBe(31);
+    // Once to list the sessions and once to build the chosen ones: never once per session.
+    expect(Math.max(...reads.values())).toBeLessThanOrEqual(2);
+  });
+
   it("shows progress with the time left", () => {
     expect(progressLine(0, 10, 0)).toBe("0/10 sessions (0s so far)");
     expect(progressLine(250, 1000, 100_000)).toBe("250/1000 sessions (1m40s so far, about 5m00s left)");
