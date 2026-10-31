@@ -25,6 +25,10 @@ export interface AppOptions {
 export const ORG_HEADER = "x-sesh-org";
 const MAX_ORG_NAME = 80;
 const MAX_TOKEN_NAME = 80;
+/** The Gantt shows this many sessions, longest first. */
+const GANTT_CAP = 100;
+/** A session that ended this recently is still going. */
+const ONGOING_MS = 5 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** The largest OTLP request accepted, just under Vercel's own 4.5 MB request limit. */
 const MAX_INGEST_BYTES = 4 * 1024 * 1024;
@@ -364,6 +368,37 @@ export function createApp(opts: AppOptions) {
       empty: days.every((d) => d.members === 0),
     });
     return c.json({ days });
+  });
+
+  // The org's sessions with any prompt or event in the last 7, 14 or 28 UTC days, longest first (real start to real end),
+  // at most GANTT_CAP of them, with `total` for how many there are. Times are the real ones; `from` and `to` bound the
+  // range for the client to clip to, and `ongoing` marks a session that ended within the last few minutes. Names no one.
+  scoped.get("/insights/gantt", async (c) => {
+    const { user, org } = c.var;
+    const raw = c.req.query("days") ?? "";
+    if (!["7", "14", "28"].includes(raw)) {
+      await metrics.capture("insights_gantt_rejected", user.id, { reason: "invalid_days" });
+      return fail(c, 400, "invalid_days", "days must be 7, 14 or 28.");
+    }
+    const days = Number(raw);
+    const lastStart = utcDay(now()).start;
+    const { sessions, total } = await store.ganttSessions(await opts.getDb(), org.id, lastStart, days, GANTT_CAP);
+    await metrics.capture("insights_gantt_viewed", user.id, { days, empty: total === 0, capped: total > GANTT_CAP });
+    return c.json({
+      from: new Date(lastStart.getTime() - (days - 1) * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date(lastStart.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      total,
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        started_at: s.started_at.toISOString(),
+        ended_at: s.ended_at.toISOString(),
+        duration_seconds: s.duration_seconds,
+        tokens: s.tokens,
+        prompts: s.prompts,
+        tool_calls: s.tool_calls,
+        ongoing: now().getTime() - s.ended_at.getTime() <= ONGOING_MS,
+      })),
+    });
   });
 
   // The org's members, by name and role, with `you` on the signed-in user's row.

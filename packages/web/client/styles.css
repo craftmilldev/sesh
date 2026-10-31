@@ -1023,3 +1023,39 @@ button.ghost:hover:not(:disabled) {
 .chart-tip-day {
   color: var(--paper-200);
 }
+.gantt-scroll {
+  max-height: 420px;
+  overflow: auto;
+}
+.gantt-bar {
+  fill: var(--ink-700);
+}
+.gantt-edge {
+  stroke: var(--paper-100);
+  stroke-width: 3;
+  stroke-dasharray: 1.5 1.5;
+}
+.chart-point.active .gantt-bar {
+  fill: var(--ink-900);
+}
+.gantt-today {
+  fill: var(--madder-600);
+  opacity: 0.08;
+}
+.gantt-axis-bg {
+  fill: var(--paper-100);
+}
+.gantt-link {
+  cursor: pointer;
+}
+.gantt-axis {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.gantt-body {
+  position: relative;
+}
+.gantt-body .chart-tip {
+  z-index: 2;
+}

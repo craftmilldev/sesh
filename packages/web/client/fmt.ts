@@ -14,3 +14,13 @@ export function abbreviate(n: number): string {
 export const share = (part: number, whole: number) => (whole > 0 ? `${((part / whole) * 100).toFixed(1)}%` : "–");
 
 export const clock = (d: Date) => d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+
+/** 90 -> "1m", 3_700 -> "1h 1m", 200_000 -> "2d 7h": the two biggest units. */
+export function duration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  if (m < 1) return `${seconds}s`;
+  const d = Math.floor(m / 1440);
+  const h = Math.floor((m % 1440) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  return h > 0 ? `${h}h ${m % 60}m` : `${m}m`;
+}

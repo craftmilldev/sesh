@@ -66,6 +66,44 @@ function limitHitDays(days: number) {
   };
 }
 
+/** The gantt endpoint's answer: `days` UTC days ending 2026-10-27; a long session open at the left, a short one, one still going. */
+function ganttData(days: number) {
+  const from = Date.UTC(2026, 9, 28 - days);
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const stat = { tokens: 1_500_000, prompts: 4, tool_calls: 30 };
+  return {
+    from: iso(from),
+    to: iso(Date.UTC(2026, 9, 28)),
+    total: 120,
+    sessions: [
+      {
+        id: "aaaaaaaa-0000-4000-8000-000000000001",
+        started_at: iso(from - 86_400_000),
+        ended_at: iso(from + 86_400_000 * 2),
+        duration_seconds: 86_400 * 3,
+        ongoing: false,
+        ...stat,
+      },
+      {
+        id: "bbbbbbbb-0000-4000-8000-000000000002",
+        started_at: iso(Date.UTC(2026, 9, 27, 9)),
+        ended_at: iso(Date.UTC(2026, 9, 27, 15)),
+        duration_seconds: 6 * 3600,
+        ongoing: true,
+        ...stat,
+      },
+      {
+        id: "cccccccc-0000-4000-8000-000000000003",
+        started_at: iso(Date.UTC(2026, 9, 26, 9)),
+        ended_at: iso(Date.UTC(2026, 9, 26, 9, 30)),
+        duration_seconds: 1800,
+        ongoing: false,
+        ...stat,
+      },
+    ],
+  };
+}
+
 /** A fake API where /me reports whichever org the last switch chose. */
 function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
   let active = opts.observer ? { ...orgs[0]!, counts_toward_team: false } : orgs[0]!;
@@ -87,53 +125,55 @@ function fakeApi(opts: { sessions?: number; observer?: boolean } = {}) {
     const body =
       path === "/me"
         ? { user: { name: "Ada" }, org: active, orgs, ingest_endpoint: "https://sesh.test" }
-        : path === "/insights/limit-hits"
-          ? limitHitDays(Number(new URLSearchParams(url.split("?")[1]).get("days")))
-          : path === "/insights/pace"
-            ? paceDays(Number(new URLSearchParams(url.split("?")[1]).get("days")))
-            : path === "/insights/activity"
-              ? insights(Number(new URLSearchParams(url.split("?")[1]).get("days")), sessions)
-              : path === "/today"
-                ? {
-                    sessions,
-                    org_sessions: sessions,
-                    tokens: 51_700_000,
-                    cache_read_tokens: 50_500_000,
-                    prompts: 40,
-                    tool_calls: 200,
-                    top: sessions
-                      ? [
-                          {
-                            id: "s1",
-                            started_at: "2026-10-22T14:00:00.000Z",
-                            tokens: 30_000_000,
-                            cache_read_tokens: 29_000_000,
-                            prompts: 9,
-                            tool_calls: 50,
-                          },
-                        ]
-                      : [],
-                  }
-                : path === "/limits"
+        : path === "/insights/gantt"
+          ? ganttData(Number(new URLSearchParams(url.split("?")[1]).get("days")))
+          : path === "/insights/limit-hits"
+            ? limitHitDays(Number(new URLSearchParams(url.split("?")[1]).get("days")))
+            : path === "/insights/pace"
+              ? paceDays(Number(new URLSearchParams(url.split("?")[1]).get("days")))
+              : path === "/insights/activity"
+                ? insights(Number(new URLSearchParams(url.split("?")[1]).get("days")), sessions)
+                : path === "/today"
                   ? {
-                      members: 4,
-                      five_hour_used: 19,
-                      seven_day_used: 90,
-                      five_hour_reporting: 2,
-                      seven_day_reporting: 3,
+                      sessions,
+                      org_sessions: sessions,
+                      tokens: 51_700_000,
+                      cache_read_tokens: 50_500_000,
+                      prompts: 40,
+                      tool_calls: 200,
+                      top: sessions
+                        ? [
+                            {
+                              id: "s1",
+                              started_at: "2026-10-22T14:00:00.000Z",
+                              tokens: 30_000_000,
+                              cache_read_tokens: 29_000_000,
+                              prompts: 9,
+                              tool_calls: 50,
+                            },
+                          ]
+                        : [],
                     }
-                  : path === "/members"
+                  : path === "/limits"
                     ? {
-                        members: [
-                          { name: "Ada", role: "owner", counts_toward_team: true, you: true },
-                          { name: "Sam", role: "member", counts_toward_team: false, you: false },
-                        ],
+                        members: 4,
+                        five_hour_used: 19,
+                        seven_day_used: 90,
+                        five_hour_reporting: 2,
+                        seven_day_reporting: 3,
                       }
-                    : path === "/tokens" && init?.method === "POST"
-                      ? { token: "sesh_fresh" }
-                      : path === "/tokens"
-                        ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
-                        : {};
+                    : path === "/members"
+                      ? {
+                          members: [
+                            { name: "Ada", role: "owner", counts_toward_team: true, you: true },
+                            { name: "Sam", role: "member", counts_toward_team: false, you: false },
+                          ],
+                        }
+                      : path === "/tokens" && init?.method === "POST"
+                        ? { token: "sesh_fresh" }
+                        : path === "/tokens"
+                          ? { tokens: [{ id: `t-${active.id}`, name: `token of ${active.name}` }] }
+                          : {};
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   });
 }
@@ -253,7 +293,7 @@ describe("signed-in pages", () => {
     const urls = () => fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights/activity"));
     expect(urls()).toEqual(["/api/insights/activity?days=14"]);
     expect([...container.querySelectorAll(".figure .num")].map((n) => n.textContent)).toEqual(["2", "14", "1", "7"]);
-    expect(container.querySelectorAll("svg.chart")).toHaveLength(3); // activity, plan pace and limit hits
+    expect(container.querySelectorAll("svg.chart")).toHaveLength(5); // activity, plan pace, limit hits, and the sessions Gantt (axis and rows)
     expect(lines()).toEqual(["prompts", "tools", "sessions"]);
     expect(container.querySelectorAll('[data-series="tools"] .chart-dot')).toHaveLength(14);
     expect(container.querySelector(".tab[aria-current]")!.textContent).toBe("Insights");
@@ -470,6 +510,48 @@ describe("signed-in pages", () => {
       "/api/insights/limit-hits?days=28",
     ]);
     expect(figure().querySelectorAll(".chart-point")).toHaveLength(28);
+    history.replaceState(null, "", "/");
+  });
+
+  it("draws sessions as a Gantt, longest on top, with open edges, a tooltip and a link", async () => {
+    const fetchMock = fakeApi();
+    vi.stubGlobal("fetch", fetchMock);
+    history.replaceState(null, "", "/app/insights?days=7");
+    await open();
+    const figure = () => container.querySelectorAll<HTMLElement>("figure.chart-figure")[3]!;
+    expect(figure().querySelector(".chart-title")!.textContent).toBe("Sessions");
+    expect(figure().querySelector(".chart-today")!.textContent).toBe("showing 3 of 120");
+    const rows = [...figure().querySelectorAll<SVGAElement>("a.gantt-link")];
+    expect(rows.map((r) => r.getAttribute("data-session")!.slice(0, 8))).toEqual(["aaaaaaaa", "bbbbbbbb", "cccccccc"]);
+    expect(rows.map((r) => r.querySelector("text")!.textContent)).toEqual(["aaaaaaaa", "bbbbbbbb", "cccccccc"]);
+    expect(rows[0]!.getAttribute("href")).toBe("/app/sessions/aaaaaaaa-0000-4000-8000-000000000001");
+    expect(rows[0]!.querySelector(".open-left")).not.toBeNull();
+    expect(rows[0]!.querySelector(".open-right")).toBeNull();
+    expect(rows[1]!.querySelector(".open-right")).not.toBeNull();
+    expect(rows[2]!.querySelector(".gantt-edge")).toBeNull();
+    expect(figure().querySelector(".gantt-today")).not.toBeNull();
+    // Bars start further right the later the session began.
+    const bx = (r: SVGAElement) => Number(r.querySelector(".gantt-bar")!.getAttribute("x"));
+    expect(bx(rows[0]!)).toBeLessThan(bx(rows[2]!));
+    expect(bx(rows[2]!)).toBeLessThan(bx(rows[1]!) + 1000);
+    expect(figure().querySelector(".chart-tip")).toBeNull();
+    await act(async () => {
+      rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      rows[1]!.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    const tip = figure().querySelector(".chart-tip")!.textContent;
+    expect(tip).toContain("bbbbbbbb");
+    expect(tip).toContain("2026-10-27 09:00 UTC to 2026-10-27 15:00 UTC");
+    expect(tip).toContain("6h 0m");
+    expect(tip).toContain("1.5M tokens · 4 prompts · 30 tool calls");
+    const button = [...container.querySelectorAll<HTMLButtonElement>(".range-button")].find(
+      (b) => b.textContent === "28 days",
+    )!;
+    await act(async () => button.click());
+    expect(fetchMock.mock.calls.map(([u]) => u).filter((u) => String(u).includes("insights/gantt"))).toEqual([
+      "/api/insights/gantt?days=7",
+      "/api/insights/gantt?days=28",
+    ]);
     history.replaceState(null, "", "/");
   });
 
