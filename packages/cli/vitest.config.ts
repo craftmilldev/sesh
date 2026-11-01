@@ -1,3 +1,4 @@
 import { defineConfig } from "vitest/config";
 
-export default defineConfig({});
+// The tests run the real CLI: none of it should reach PostHog.
+export default defineConfig({ test: { env: { SESH_TELEMETRY: "0" } } });
