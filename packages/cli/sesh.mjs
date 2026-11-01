@@ -1304,7 +1304,7 @@ export async function main(argv) {
       throw new Error(`Unknown command: ${argv.join(" ")}\n\n${HELP}`);
     },
   };
-  if (!commands[command]) throw new Error(`Unknown command: ${argv.join(" ")}\n\n${HELP}`);
+  if (!Object.hasOwn(commands, command)) throw new Error(`Unknown command: ${argv.join(" ")}\n\n${HELP}`);
   return counted(command, quiet, async () => void (await commands[command]()));
 }
 

@@ -866,4 +866,33 @@ fs.readFileSync = (f, ...a) => {
     await expect(capture("x", {}, { env: { SESH_STATE_DIR: h.state }, fetchFn })).resolves.toBeUndefined();
     expect(calls).toBe(1);
   });
+
+  it("records how a command ended, and nothing for the local-only ones", async () => {
+    const events: { event: string; properties: Record<string, unknown> }[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c: Buffer) => (body += c.toString()));
+      req.on("end", () => {
+        events.push(JSON.parse(body) as (typeof events)[number]);
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, r));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const h = home({ SESH_TELEMETRY: "1", SESH_UPDATED: "1", POSTHOG_HOST: `http://127.0.0.1:${port}` });
+      expect((await h.sesh("status")).code).toBe(0);
+      expect((await h.sesh("upload", "abc")).code).toBe(1); // no sesh to send to
+      await h.sesh("sessions");
+      await h.sesh("config");
+      expect((await h.sesh("constructor")).code).toBe(1);
+      expect(events.map((e) => [e.event, e.properties.command])).toEqual([
+        ["cli_command_succeeded", "status"],
+        ["cli_command_failed", "upload"],
+      ]);
+      expect(events[0]?.properties).toMatchObject({ product: "sesh", app: "sesh-cli" });
+    } finally {
+      server.close();
+    }
+  });
 });
