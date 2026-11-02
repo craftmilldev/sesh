@@ -1,4 +1,4 @@
-import { createAnalytics } from "@craftmilldev/analytics/server";
+import { PostHog } from "posthog-node";
 
 /** Product metrics. Sends nothing unless POSTHOG_API_KEY is set. */
 export interface Metrics {
@@ -11,7 +11,7 @@ export const noopMetrics: Metrics = { capture: async () => {} };
 /** Set on every event so reports can filter on `product = sesh` (`app` says which part of Sesh sent it). */
 export const IDENTITY = { product: "sesh", app: "sesh-web" } as const;
 
-/** Craftmill's shared PostHog proxy; POSTHOG_HOST overrides it (a full URL, e.g. for a self-hosted PostHog). */
+/** Craftmill's shared PostHog proxy (CRA-224); POSTHOG_HOST overrides it (a full URL). */
 export const DEFAULT_HOST = "https://a.craftmill.dev/api/ingest";
 
 /** Who an event is about when nobody is logged in. */
@@ -20,8 +20,15 @@ export const ANONYMOUS = "anonymous";
 export function createMetrics(env: NodeJS.ProcessEnv = process.env): Metrics {
   const apiKey = env.POSTHOG_API_KEY;
   if (!apiKey) return noopMetrics;
-  // The package sets product and app on every event, sends right away (a serverless function can be frozen before
-  // a batch goes out) and never throws.
-  const analytics = createAnalytics({ ...IDENTITY, apiKey, host: env.POSTHOG_HOST || DEFAULT_HOST });
-  return { capture: (event, distinctId, properties) => analytics.capture(event, distinctId, properties) };
+  const client = new PostHog(apiKey, { host: env.POSTHOG_HOST || DEFAULT_HOST });
+  return {
+    // Sent right away, not batched: a serverless function can be frozen before a batch goes out.
+    async capture(event, distinctId, properties) {
+      try {
+        await client.captureImmediate({ distinctId, event, properties: { ...properties, ...IDENTITY } });
+      } catch (err) {
+        console.error("metrics:", err);
+      }
+    },
+  };
 }
