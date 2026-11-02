@@ -24,6 +24,13 @@ You need a Sesh server (see [Deploy](docs/deploy.md), or [run it locally](docs/d
 To bring in sessions from before you set this up, run `sesh sessions` to list them and `sesh upload --all` to send them.
 Re-running is safe.
 
+## Installing dependencies
+
+Sesh's web server uses `@craftmilldev/analytics`, which lives on GitHub Packages (`.npmrc` points `@craftmilldev` there).
+`npm ci` needs `NODE_AUTH_TOKEN` set to a GitHub token with `read:packages`: `export NODE_AUTH_TOKEN=$(gh auth token)`
+locally, `secrets.GITHUB_TOKEN` in CI (the package must grant this repo access), and an environment variable on the
+Vercel project.
+
 ## Learn more
 
 - [How it works](docs/how-it-works.md): sign-in, orgs, ingest, and what each page shows

@@ -54,7 +54,8 @@ const settingsPath = (env = process.env) => join(env.CLAUDE_CONFIG_DIR || join(h
 
 /** Craftmill's PostHog project key. Project keys are write-only and public by design; POSTHOG_API_KEY overrides it. */
 const POSTHOG_KEY = "phc_BPP9dYnbUgCbhLiRynBT4sEpWJaYAFWMVApuMZUshQMy";
-const POSTHOG_HOST = "https://us.i.posthog.com";
+/** Craftmill's shared PostHog proxy (it forwards /i/v0/e/ to PostHog). */
+const POSTHOG_HOST = "https://a.craftmill.dev/api/ingest";
 const METRICS_TIMEOUT_MS = 2_000;
 /** Set on every event so reports can filter on `product = sesh` (`app` says which part of Sesh sent it). */
 export const IDENTITY = { product: "sesh", app: "sesh-cli" };

@@ -841,7 +841,7 @@ fs.readFileSync = (f, ...a) => {
     await capture("cli_command_succeeded", {}, { env: { SESH_STATE_DIR: h.state, POSTHOG_API_KEY: "phc_x" }, fetchFn });
     expect(sent).toHaveLength(2);
     const [first, second] = sent as [(typeof sent)[number], (typeof sent)[number]];
-    expect(first.url).toBe("https://us.i.posthog.com/i/v0/e/");
+    expect(first.url).toBe("https://a.craftmill.dev/api/ingest/i/v0/e/");
     expect(first.body).toMatchObject({
       event: "cli_command_failed",
       properties: { command: "upload", product: "sesh", app: "sesh-cli", cli_version: VERSION },

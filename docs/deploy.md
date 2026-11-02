@@ -5,8 +5,9 @@ sesh deploys to Vercel the way loopway does: Vercel uploads only the Root Direct
 
 1. In the `craftmill` Vercel team, import `craftmilldev/sesh` as a new project named `sesh`, with **Root Directory** set to `packages/web`.
 2. Set `DATABASE_URL` (Neon's pooled string) and `DATABASE_URL_UNPOOLED` (the direct one), `TOKEN_SECRET`
-   (`openssl rand -hex 32`), `RESEND_API_KEY` and `EMAIL_FROM` in the project's environment variables. Optionally set
-   `POSTHOG_API_KEY` (and `POSTHOG_HOST` for EU). The build applies pending migrations before deploying.
+   (`openssl rand -hex 32`), `RESEND_API_KEY` and `EMAIL_FROM` in the project's environment variables. Set
+   `NODE_AUTH_TOKEN` (a GitHub token with `read:packages`, for installing `@craftmilldev/analytics` from GitHub Packages; see
+   `.npmrc`). Optionally set `POSTHOG_API_KEY` (events go through Craftmill's shared proxy; `POSTHOG_HOST` overrides it). The build applies pending migrations before deploying.
 3. Deploy `main`, then check `https://<deployment>/health` returns 200.
 
 After that, every merge to `main` deploys.

@@ -19,9 +19,9 @@
     "db:migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {
+    "@craftmilldev/analytics": "^0.1.0",
     "hono": "^4.13.13",
     "postgres": "^3.4.9",
-    "posthog-node": "^5.55.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
