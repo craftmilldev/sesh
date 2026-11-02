@@ -199,6 +199,20 @@ describe("today", () => {
     expect(before).toMatchObject({ sessions: 1, prompts: 1, tool_calls: 1, tokens: 160 });
   });
 
+  it("leaves out the heaviest sessions for top=0, with the same totals, and ignores other top values", async () => {
+    const x = await setup("topzero@example.com", "2026-10-26T23:00:00.000Z", [
+      "2026-10-26T23:30:00.000Z",
+      "2026-10-27T01:00:00.000Z",
+    ]);
+    const full = (await (await today(x)).json()) as { top: unknown[] };
+    const none = (await (await today(x, "?top=0")).json()) as { top: unknown[] };
+    expect(none.top).toEqual([]);
+    expect({ ...none, top: [] }).toEqual({ ...full, top: [] });
+    expect(full.top).toHaveLength(1);
+    const other = (await (await today(x, "?top=99")).json()) as { top: unknown[] };
+    expect(other.top).toEqual(full.top);
+  });
+
   it("does not count a session that started today but did nothing today", async () => {
     // Started at 00:00 UTC today (as the clock sees it) with all its activity the day before.
     const x = await setup("idle@example.com", "2026-10-27T00:00:00.000Z", ["2026-10-26T12:00:00.000Z"]);
