@@ -16,7 +16,7 @@
 // and SESH_TOKEN override that; the OTel variables are the last resort. It never fails or waits on the network: the
 // post, and any update, happen in a detached child.
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   createReadStream,
@@ -49,6 +49,79 @@ const UPDATED_ENV = "SESH_UPDATED";
 const SELF = fileURLToPath(import.meta.url);
 const stateDir = (env = process.env) => env.SESH_STATE_DIR || join(homedir(), ".sesh");
 const settingsPath = (env = process.env) => join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json");
+
+// --- product metrics ---------------------------------------------------------------------------------------------
+
+/** Craftmill's PostHog project key. Project keys are write-only and public by design; POSTHOG_API_KEY overrides it. */
+const POSTHOG_KEY = "phc_BPP9dYnbUgCbhLiRynBT4sEpWJaYAFWMVApuMZUshQMy";
+const POSTHOG_HOST = "https://us.i.posthog.com";
+const METRICS_TIMEOUT_MS = 2_000;
+/** Set on every event so reports can filter on `product = sesh` (`app` says which part of Sesh sent it). */
+export const IDENTITY = { product: "sesh", app: "sesh-cli" };
+/** Extra properties the running command wants on its outcome event (counts, never contents). */
+const outcomeProps = {};
+
+/** Whether metrics are off: DO_NOT_TRACK or SESH_TELEMETRY=0. */
+export const metricsOff = (env = process.env) =>
+  (!!env.DO_NOT_TRACK && env.DO_NOT_TRACK !== "0") || env.SESH_TELEMETRY === "0";
+
+/** The random id that stands for this install: ~/.sesh/install-id, made on first use. */
+function installId(env = process.env) {
+  const file = join(stateDir(env), "install-id");
+  try {
+    const id = readFileSync(file, "utf8").trim();
+    if (id) return id;
+  } catch {
+    // no id yet
+  }
+  const id = randomUUID();
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, id + "\n", { mode: 0o600 });
+  } catch {
+    // cannot remember it; this event just gets a one-off id
+  }
+  return id;
+}
+
+/** Records one event, right away (the CLI exits as soon as its command is done). Never throws, never waits long. */
+export async function capture(event, properties = {}, { env = process.env, fetchFn = fetch } = {}) {
+  if (metricsOff(env)) return;
+  try {
+    await fetchFn(`${env.POSTHOG_HOST || POSTHOG_HOST}/i/v0/e/`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        api_key: env.POSTHOG_API_KEY || POSTHOG_KEY,
+        event,
+        distinct_id: installId(env),
+        properties: { ...properties, ...IDENTITY, cli_version: VERSION, $process_person_profile: false },
+      }),
+      signal: AbortSignal.timeout(METRICS_TIMEOUT_MS),
+    });
+  } catch {
+    // offline or blocked: the command still has to work
+  }
+}
+
+/** The commands whose use is counted. The status line runs constantly, and the local-only ones (sessions, config,
+ * upload --dry-run) make no request, so they are left out. */
+const COUNTED = new Set(["status", "upload", "setup", "update", "statusline"]);
+
+/** Runs a command and records how it ended: `cli_command_succeeded` or `cli_command_failed`, with the command name. */
+async function counted(command, quiet, run) {
+  if (!COUNTED.has(command) || quiet) return run();
+  const started = Date.now();
+  const done = (outcome) =>
+    capture(`cli_command_${outcome}`, { command, duration_ms: Date.now() - started, ...outcomeProps });
+  try {
+    await run();
+  } catch (err) {
+    await done("failed");
+    throw err;
+  }
+  await done(process.exitCode ? "failed" : "succeeded");
+}
 
 // --- the status line -------------------------------------------------------------------------------------------
 
@@ -1127,6 +1200,7 @@ async function uploadCommand(args, { fetchFn = fetch } = {}) {
     if (live && done) process.stderr.write("\n");
   }
   console.log(uploadSummary(total));
+  Object.assign(outcomeProps, { sessions_sent: total.sent, sessions_failed: total.failed });
   if (total.failed) process.exitCode = 1;
 }
 
@@ -1217,16 +1291,21 @@ export async function main(argv) {
   // A dry-run upload makes no request at all.
   const quiet = command === "config" || command === "sessions" || (command === "upload" && rest.includes("--dry-run"));
   if (!quiet) await updateBeforeCommand(argv);
-  if (command === "status") return statusCommand();
-  if (command === "sessions") return sessionsCommand();
-  if (command === "upload") return uploadCommand(rest);
-  if (command === "setup") return setupCommand(rest);
-  if (command === "update") return updateCommand();
-  if (command === "config") return configCommand(rest);
-  if (command === "statusline" && rest[0] === "on")
-    return void (await statuslineOn({ replace: rest.includes("--replace") }));
-  if (command === "statusline" && rest[0] === "off") return statuslineOff();
-  throw new Error(`Unknown command: ${argv.join(" ")}\n\n${HELP}`);
+  const commands = {
+    status: () => statusCommand(),
+    sessions: () => sessionsCommand(),
+    upload: () => uploadCommand(rest),
+    setup: () => setupCommand(rest),
+    update: () => updateCommand(),
+    config: () => configCommand(rest),
+    statusline: () => {
+      if (rest[0] === "on") return statuslineOn({ replace: rest.includes("--replace") });
+      if (rest[0] === "off") return statuslineOff();
+      throw new Error(`Unknown command: ${argv.join(" ")}\n\n${HELP}`);
+    },
+  };
+  if (!Object.hasOwn(commands, command)) throw new Error(`Unknown command: ${argv.join(" ")}\n\n${HELP}`);
+  return counted(command, quiet, async () => void (await commands[command]()));
 }
 
 if (process.argv[1] && sameFile(SELF, process.argv[1])) {

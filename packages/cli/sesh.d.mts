@@ -91,3 +91,13 @@ export function uploadSummary(t: {
 }): string;
 /** A bulk upload's progress: done/total, time so far and time left. */
 export function progressLine(done: number, total: number, elapsedMs: number): string;
+/** Set on every metrics event: `product = sesh`, `app = sesh-cli`. */
+export const IDENTITY: { readonly product: string; readonly app: string };
+/** Whether metrics are off (DO_NOT_TRACK, or SESH_TELEMETRY=0). */
+export function metricsOff(env?: Record<string, string | undefined>): boolean;
+/** Records one PostHog event. Never throws; sends nothing when metrics are off. */
+export function capture(
+  event: string,
+  properties?: Record<string, unknown>,
+  options?: { env?: Record<string, string | undefined>; fetchFn?: typeof fetch },
+): Promise<void>;

@@ -8,6 +8,9 @@ import { gunzipSync } from "node:zlib";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   buildPayloads,
+  capture,
+  IDENTITY,
+  metricsOff,
   buildTurns,
   formatBar,
   isNewer,
@@ -45,6 +48,7 @@ function home(extraEnv: Record<string, string> = {}) {
     HOME: root,
     SESH_STATE_DIR: state,
     CLAUDE_CONFIG_DIR: join(root, ".claude"),
+    SESH_TELEMETRY: "0",
     ...extraEnv,
   };
   const sesh = (...args: string[]) =>
@@ -823,5 +827,72 @@ fs.readFileSync = (f, ...a) => {
     expect(logsUrl({ url: "https://sesh.example/v1/limits", token: "t" })).toBe("https://sesh.example/v1/logs");
     expect(logsUrl({ url: "https://x.example/otel/v1/limits", token: "t" })).toBe("https://x.example/otel/v1/logs");
     expect(logsUrl(null)).toBeNull();
+  });
+
+  it("tags every metrics event with product sesh and app sesh-cli", async () => {
+    expect(IDENTITY).toEqual({ product: "sesh", app: "sesh-cli" });
+    const h = home();
+    const sent: { url: string; body: Record<string, unknown> }[] = [];
+    const fetchFn = (async (url: string, init: { body: string }) => {
+      sent.push({ url, body: JSON.parse(init.body) as Record<string, unknown> });
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    await capture("cli_command_failed", { command: "upload" }, { env: { SESH_STATE_DIR: h.state }, fetchFn });
+    await capture("cli_command_succeeded", {}, { env: { SESH_STATE_DIR: h.state, POSTHOG_API_KEY: "phc_x" }, fetchFn });
+    expect(sent).toHaveLength(2);
+    const [first, second] = sent as [(typeof sent)[number], (typeof sent)[number]];
+    expect(first.url).toBe("https://us.i.posthog.com/i/v0/e/");
+    expect(first.body).toMatchObject({
+      event: "cli_command_failed",
+      properties: { command: "upload", product: "sesh", app: "sesh-cli", cli_version: VERSION },
+    });
+    expect(second.body.api_key).toBe("phc_x");
+    // the same install keeps one id
+    expect(second.body.distinct_id).toBe(first.body.distinct_id);
+  });
+
+  it("sends no metrics with DO_NOT_TRACK or SESH_TELEMETRY=0, and never throws", async () => {
+    expect(metricsOff({ DO_NOT_TRACK: "1" })).toBe(true);
+    expect(metricsOff({ DO_NOT_TRACK: "0" })).toBe(false);
+    expect(metricsOff({ SESH_TELEMETRY: "0" })).toBe(true);
+    const h = home();
+    let calls = 0;
+    const fetchFn = (async () => {
+      calls++;
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    await capture("x", {}, { env: { SESH_STATE_DIR: h.state, DO_NOT_TRACK: "1" }, fetchFn });
+    expect(calls).toBe(0);
+    await expect(capture("x", {}, { env: { SESH_STATE_DIR: h.state }, fetchFn })).resolves.toBeUndefined();
+    expect(calls).toBe(1);
+  });
+
+  it("records how a command ended, and nothing for the local-only ones", async () => {
+    const events: { event: string; properties: Record<string, unknown> }[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c: Buffer) => (body += c.toString()));
+      req.on("end", () => {
+        events.push(JSON.parse(body) as (typeof events)[number]);
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, r));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const h = home({ SESH_TELEMETRY: "1", SESH_UPDATED: "1", POSTHOG_HOST: `http://127.0.0.1:${port}` });
+      expect((await h.sesh("status")).code).toBe(0);
+      expect((await h.sesh("upload", "abc")).code).toBe(1); // no sesh to send to
+      await h.sesh("sessions");
+      await h.sesh("config");
+      expect((await h.sesh("constructor")).code).toBe(1);
+      expect(events.map((e) => [e.event, e.properties.command])).toEqual([
+        ["cli_command_succeeded", "status"],
+        ["cli_command_failed", "upload"],
+      ]);
+      expect(events[0]?.properties).toMatchObject({ product: "sesh", app: "sesh-cli" });
+    } finally {
+      server.close();
+    }
   });
 });
