@@ -132,7 +132,13 @@ describe("session detail", () => {
       const times = p.events.map((e) => Date.parse(e.occurred_at));
       expect(times).toEqual([...times].sort((a, b) => a - b));
     }
-    expect(body.prompts.flatMap((p) => p.events).every((e) => e.raw && typeof e.raw === "object")).toBe(true);
+    // The raw JSON is not sent with the list; it is fetched per event.
+    const first = body.prompts[0]!.events[0] as unknown as { id: string };
+    expect(body.prompts.flatMap((p) => p.events).every((e) => !("raw" in e))).toBe(true);
+    const rawRes = await t.call(`/sessions/${id}/events/${first.id}/raw`, { session });
+    expect(rawRes.status).toBe(200);
+    expect(typeof ((await rawRes.json()) as { raw: unknown }).raw).toBe("object");
+    expect((await t.call(`/sessions/${id}/events/${uuidv7()}/raw`, { session })).status).toBe(404);
     expect(t.events.find((e) => e.event === "session_detail_viewed")!.properties).toMatchObject({ prompts: 2 });
   });
 

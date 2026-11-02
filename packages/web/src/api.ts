@@ -265,7 +265,15 @@ export function createApp(opts: AppOptions) {
       await metrics.capture("today_rejected", user.id, { reason: "invalid_day" });
       return fail(c, 400, "invalid_day", "day must be a date like 2026-10-22.");
     }
-    const { totals, top, orgSessions } = await store.activityBetween(await opts.getDb(), org.id, day.start, day.end, 5);
+    // `top=0` leaves out the heaviest sessions, for callers that only want the totals.
+    const topN = c.req.query("top") === "0" ? 0 : 5;
+    const { totals, top, orgSessions } = await store.activityBetween(
+      await opts.getDb(),
+      org.id,
+      day.start,
+      day.end,
+      topN,
+    );
     await metrics.capture("today_viewed", user.id, {
       empty: totals.sessions === 0,
       org_empty: orgSessions === 0,
@@ -432,6 +440,22 @@ export function createApp(opts: AppOptions) {
       // Events that belong to no prompt (Claude Code didn't say which prompt caused them).
       unattributed_events: events.filter((e) => !e.prompt_id).map(publicEvent),
     });
+  });
+
+  // One event's raw JSON, fetched when it is opened on the session page rather than sent with every event.
+  scoped.get("/sessions/:id/events/:eventId/raw", async (c) => {
+    const { user, org } = c.var;
+    const { id, eventId } = c.req.param();
+    const raw =
+      UUID_RE.test(id) && UUID_RE.test(eventId)
+        ? await store.getEventRaw(await opts.getDb(), org.id, id, eventId)
+        : undefined;
+    if (raw === undefined) {
+      await metrics.capture("event_raw_not_found", user.id);
+      return fail(c, 404, "event_not_found", "No such event.");
+    }
+    await metrics.capture("event_raw_viewed", user.id);
+    return c.json({ raw });
   });
 
   scoped.post("/orgs", async (c) => {
