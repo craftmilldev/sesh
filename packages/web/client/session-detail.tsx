@@ -16,7 +16,6 @@ interface Event {
   duration_ms: number | null;
   tool_name: string | null;
   success: boolean | null;
-  raw: unknown;
 }
 interface Prompt {
   id: string;
@@ -60,7 +59,26 @@ function Figure({ label, value, note }: { label: string; value: string; note: st
   );
 }
 
-function Events({ events }: { events: Event[] }) {
+/** The event's raw JSON, fetched the first time it is opened. */
+function Raw({ sessionId, eventId }: { sessionId: string; eventId: string }) {
+  const [raw, setRaw] = useState<string>();
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open || raw !== undefined) return;
+    api<{ raw: unknown }>(`/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}/raw`).then(
+      (r) => setRaw(JSON.stringify(r.raw, null, 2)),
+      (e) => setRaw(message(e)),
+    );
+  }, [open, raw, sessionId, eventId]);
+  return (
+    <details onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>JSON</summary>
+      {open && <pre className="panel">{raw ?? "Loading…"}</pre>}
+    </details>
+  );
+}
+
+function Events({ sessionId, events }: { sessionId: string; events: Event[] }) {
   if (!events.length) return <p className="muted">No events.</p>;
   return (
     <div className="table-scroll">
@@ -96,10 +114,7 @@ function Events({ events }: { events: Event[] }) {
                 <td className="num">{dash(e.cost_usd)}</td>
                 <td className="num">{dash(e.duration_ms)}</td>
                 <td>
-                  <details>
-                    <summary>JSON</summary>
-                    <pre className="panel">{JSON.stringify(e.raw, null, 2)}</pre>
-                  </details>
+                  <Raw sessionId={sessionId} eventId={e.id} />
                 </td>
               </tr>
             );
@@ -121,7 +136,7 @@ export function SessionDetail({ id }: { id: string }) {
       (d) => {
         setData(d);
         const start = new Date(d.session.started_at);
-        api<{ tokens: number }>(`/today?day=${start.toISOString().slice(0, 10)}`).then(
+        api<{ tokens: number }>(`/today?top=0&day=${start.toISOString().slice(0, 10)}`).then(
           (t) => setDayTokens(t.tokens),
           () => undefined, // the percentage is a nicety; the session itself is shown
         );
@@ -193,13 +208,13 @@ export function SessionDetail({ id }: { id: string }) {
       {data.prompts.map((p, i) => (
         <section className="section" key={p.id}>
           <p className="eyebrow">Prompt {i + 1}</p>
-          <Events events={p.events} />
+          <Events sessionId={id} events={p.events} />
         </section>
       ))}
       {data.unattributed_events.length > 0 && (
         <section className="section">
           <p className="eyebrow">Events outside any prompt</p>
-          <Events events={data.unattributed_events} />
+          <Events sessionId={id} events={data.unattributed_events} />
         </section>
       )}
     </>

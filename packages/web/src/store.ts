@@ -578,7 +578,6 @@ export interface EventRow {
   duration_ms: number | null;
   tool_name: string | null;
   success: boolean | null;
-  raw: unknown;
 }
 export interface PromptRow {
   id: string;
@@ -603,7 +602,7 @@ export async function getSession(
   );
   const events = await db.query<EventRow>(
     `SELECT id, prompt_id, kind, occurred_at, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            cost_usd, duration_ms, tool_name, success, raw
+            cost_usd, duration_ms, tool_name, success
      FROM sesh.events WHERE session_id = $1 ORDER BY occurred_at, id`,
     [sessionId],
   );
@@ -623,6 +622,16 @@ export async function getSession(
       duration_ms: n(e.duration_ms),
     })),
   };
+}
+
+/** One event's raw JSON, for the session page to fetch when someone opens it. Undefined if the org has no such event. */
+export async function getEventRaw(db: Db, orgId: string, sessionId: string, eventId: string): Promise<unknown> {
+  const [row] = await db.query<{ raw: unknown }>(
+    `SELECT e.raw FROM sesh.events e JOIN sesh.sessions s ON s.id = e.session_id
+     WHERE s.org_id = $1 AND s.id = $2 AND e.id = $3`,
+    [orgId, sessionId, eventId],
+  );
+  return row?.raw;
 }
 
 export interface DayTotals {
@@ -674,10 +683,13 @@ export async function activityBetween(
      FROM (${active}) t`,
     [orgId, since, until],
   );
-  const rows = await db.query<Record<keyof DayTop, string | Date>>(
-    `${active} ORDER BY tokens DESC, s.started_at DESC, s.id DESC LIMIT $4`,
-    [orgId, since, until, top],
-  );
+  const rows =
+    top > 0
+      ? await db.query<Record<keyof DayTop, string | Date>>(
+          `${active} ORDER BY tokens DESC, s.started_at DESC, s.id DESC LIMIT $4`,
+          [orgId, since, until, top],
+        )
+      : [];
   const [all] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions WHERE org_id = $1`, [orgId]);
   return {
     totals: {
@@ -775,6 +787,7 @@ export async function ganttSessions(
        EXISTS (SELECT 1 FROM sesh.events WHERE session_id = s.id AND occurred_at >= $2 AND occurred_at < $3)
        OR EXISTS (SELECT 1 FROM sesh.prompts WHERE session_id = s.id AND started_at >= $2 AND started_at < $3))`;
   const [t] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM sesh.sessions s ${where}`, [orgId, first, end]);
+  // Pick the longest `limit` sessions first, then total only those: the totals are the expensive part.
   const rows = await db.query<{
     id: string;
     started_at: Date;
@@ -786,15 +799,18 @@ export async function ganttSessions(
     `SELECT s.id, s.started_at, s.ended_at,
             COALESCE(e.tokens, 0) AS tokens, COALESCE(e.tool_calls, 0) AS tool_calls,
             (SELECT count(*) FROM sesh.prompts p WHERE p.session_id = s.id) AS prompts
-     FROM sesh.sessions s
+     FROM (
+       SELECT s.id, s.started_at, s.ended_at FROM sesh.sessions s
+       ${where}
+       ORDER BY s.ended_at - s.started_at DESC, s.started_at DESC, s.id DESC
+       LIMIT $4
+     ) s
      LEFT JOIN LATERAL (
        SELECT sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)) AS tokens,
               count(*) FILTER (WHERE kind = 'tool_call') AS tool_calls
        FROM sesh.events WHERE session_id = s.id
      ) e ON true
-     ${where}
-     ORDER BY s.ended_at - s.started_at DESC, s.started_at DESC, s.id DESC
-     LIMIT $4`,
+     ORDER BY s.ended_at - s.started_at DESC, s.started_at DESC, s.id DESC`,
     [orgId, first, end, limit],
   );
   return {

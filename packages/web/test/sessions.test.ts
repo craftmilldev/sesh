@@ -132,7 +132,13 @@ describe("session detail", () => {
       const times = p.events.map((e) => Date.parse(e.occurred_at));
       expect(times).toEqual([...times].sort((a, b) => a - b));
     }
-    expect(body.prompts.flatMap((p) => p.events).every((e) => e.raw && typeof e.raw === "object")).toBe(true);
+    // The raw JSON is not sent with the list; it is fetched per event.
+    const first = body.prompts[0]!.events[0] as unknown as { id: string };
+    expect(body.prompts.flatMap((p) => p.events).every((e) => !("raw" in e))).toBe(true);
+    const rawRes = await t.call(`/sessions/${id}/events/${first.id}/raw`, { session });
+    expect(rawRes.status).toBe(200);
+    expect(typeof ((await rawRes.json()) as { raw: unknown }).raw).toBe("object");
+    expect((await t.call(`/sessions/${id}/events/${uuidv7()}/raw`, { session })).status).toBe(404);
     expect(t.events.find((e) => e.event === "session_detail_viewed")!.properties).toMatchObject({ prompts: 2 });
   });
 
@@ -191,6 +197,20 @@ describe("today", () => {
     expect(body.top).toMatchObject([{ id: x.id, tokens: 160, prompts: 1, tool_calls: 1 }]);
     const before = (await (await today(x, "?day=2026-10-26")).json()) as Record<string, unknown>;
     expect(before).toMatchObject({ sessions: 1, prompts: 1, tool_calls: 1, tokens: 160 });
+  });
+
+  it("leaves out the heaviest sessions for top=0, with the same totals, and ignores other top values", async () => {
+    const x = await setup("topzero@example.com", "2026-10-26T23:00:00.000Z", [
+      "2026-10-26T23:30:00.000Z",
+      "2026-10-27T01:00:00.000Z",
+    ]);
+    const full = (await (await today(x)).json()) as { top: unknown[] };
+    const none = (await (await today(x, "?top=0")).json()) as { top: unknown[] };
+    expect(none.top).toEqual([]);
+    expect({ ...none, top: [] }).toEqual({ ...full, top: [] });
+    expect(full.top).toHaveLength(1);
+    const other = (await (await today(x, "?top=99")).json()) as { top: unknown[] };
+    expect(other.top).toEqual(full.top);
   });
 
   it("does not count a session that started today but did nothing today", async () => {
