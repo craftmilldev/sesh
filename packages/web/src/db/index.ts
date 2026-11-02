@@ -54,7 +54,9 @@ export async function migrate(db: Db): Promise<string[]> {
   // Transaction-level locks (not session-level) so this holds through a pooler and releases itself on failure.
   await db.transaction(async (tx) => {
     await tx.query(`SELECT pg_advisory_xact_lock($1)`, [MIGRATE_LOCK]);
-    await tx.query(`CREATE SCHEMA IF NOT EXISTS sesh`);
+    // Only create it when missing: CREATE SCHEMA IF NOT EXISTS needs CREATE on the database even if the schema exists.
+    const schema = await tx.query(`SELECT 1 FROM pg_namespace WHERE nspname = 'sesh'`);
+    if (!schema.length) await tx.query(`CREATE SCHEMA sesh`);
     await tx.query(
       `CREATE TABLE IF NOT EXISTS sesh.schema_migrations (
          version text PRIMARY KEY,
